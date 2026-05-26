@@ -13,21 +13,10 @@
 
 name: pr-guard
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 현재 상태: BOOTSTRAP — 봇 본체(main.py)가 아직 미완성이라
-# 자동 PR 검증을 임시로 비활성화함. workflow_dispatch로 수동 실행만 가능.
-#
-# 봇 본체가 완성되면 (`evaluate_drift()` 구현 + `__main__.py` 추가)
-# 아래 `pull_request:` 블록을 활성화하고 본 주석을 제거할 것.
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 on:
-  # 봇 본체 완성 전까지는 수동 실행만
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
-
-  # TODO(봇 본체 완성 후 활성화):
-  # pull_request:
-  #   types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
