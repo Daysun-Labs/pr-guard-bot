@@ -47,7 +47,16 @@ jobs:
       - name: Checkout PR
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # diff 계산을 위해 full history
+          # Avoid fetching every branch/tag; some repos/org policies reject that ref listing.
+          # The guard only needs the checked-out PR ref plus the base ref fetched below.
+          fetch-depth: 2
+
+      - name: Fetch base ref for PR diff
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
 
       - name: Setup Python
         uses: actions/setup-python@v5
