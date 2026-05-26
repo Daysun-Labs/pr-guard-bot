@@ -82,6 +82,34 @@ def detect_drift(
     return drifts
 
 
+def filter_actionable_drift(
+    drifts: Iterable[DriftItem],
+) -> tuple[list[DriftItem], dict[str, int]]:
+    """Return only items the PR could plausibly act on, plus suppression stats.
+
+    Suppressed by default:
+      - ``kind == "non_goal"`` — definitionally something the bot should NOT do
+      - ``score == 0`` — no token/file/symbol overlap with the diff, i.e. the
+        requirement is simply unrelated to this PR's scope. Carrying these into
+        the PR comment produces noise on every small PR.
+
+    Returns ``(actionable, suppressed)`` where ``suppressed`` is a count map::
+
+        {"non_goal": N, "unrelated": M}
+    """
+    actionable: list[DriftItem] = []
+    suppressed = {"non_goal": 0, "unrelated": 0}
+    for d in drifts:
+        if d.kind == "non_goal":
+            suppressed["non_goal"] += 1
+            continue
+        if d.score <= 0.0:
+            suppressed["unrelated"] += 1
+            continue
+        actionable.append(d)
+    return actionable, suppressed
+
+
 def _to_drift_item(m: MatchResult) -> DriftItem:
     req = m.requirement
     severity = _SEVERITY_BY_KIND.get(req.kind, "medium")

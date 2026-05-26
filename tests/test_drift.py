@@ -7,7 +7,7 @@ and the drift == 0 case (PR diff covers every requirement).
 from __future__ import annotations
 
 from pr_guard.diff_extractor import parse_unified_diff
-from pr_guard.drift import DriftItem, detect_drift
+from pr_guard.drift import DriftItem, detect_drift, filter_actionable_drift
 from pr_guard.spec_parser import Requirement, SpecBundle
 
 
@@ -93,3 +93,50 @@ def test_drift_items_are_serializable() -> None:
     drifts = detect_drift(reqs, diff)
     assert drifts[0].to_dict()["line"] == 7
     assert drifts[0].to_dict()["type"] == "missing_requirement"
+
+
+# ---------------------------------------------------------------------------
+# filter_actionable_drift
+# ---------------------------------------------------------------------------
+
+
+def _drift(*, kind: str = "acceptance", score: float = 0.5, source: str = "prd") -> DriftItem:
+    return DriftItem(
+        type="missing_requirement",
+        severity="high",
+        source=source,
+        source_file=f"{source.upper()}.md",
+        section="x",
+        kind=kind,
+        quote="q",
+        line=1,
+        score=score,
+    )
+
+
+def test_filter_drops_non_goals() -> None:
+    items = [_drift(kind="non_goal", score=0.5), _drift(kind="acceptance", score=0.5)]
+    actionable, suppressed = filter_actionable_drift(items)
+    assert len(actionable) == 1
+    assert actionable[0].kind == "acceptance"
+    assert suppressed == {"non_goal": 1, "unrelated": 0}
+
+
+def test_filter_drops_zero_score_unrelated() -> None:
+    items = [_drift(score=0.0), _drift(score=0.0), _drift(score=0.2)]
+    actionable, suppressed = filter_actionable_drift(items)
+    assert len(actionable) == 1
+    assert actionable[0].score == 0.2
+    assert suppressed == {"non_goal": 0, "unrelated": 2}
+
+
+def test_filter_empty_input() -> None:
+    actionable, suppressed = filter_actionable_drift([])
+    assert actionable == []
+    assert suppressed == {"non_goal": 0, "unrelated": 0}
+
+
+def test_filter_keeps_partial_match_violations() -> None:
+    items = [_drift(score=0.1), _drift(score=0.33), _drift(score=0.99)]
+    actionable, _ = filter_actionable_drift(items)
+    assert len(actionable) == 3

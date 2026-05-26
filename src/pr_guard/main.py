@@ -24,7 +24,7 @@ import httpx
 from .comment_format import format_drift_comment
 from .detector import detect_spec_files
 from .diff_extractor import parse_unified_diff
-from .drift import detect_drift
+from .drift import detect_drift, filter_actionable_drift
 from .github_client import create_github_client
 from .onboarding_orchestrator import run_onboarding
 from .publish import publish_pr_comment
@@ -220,9 +220,18 @@ def main(argv: list[str] | None = None) -> int:
     raw_diff = _git_diff(args.base_ref, args.head_ref, repo_root=args.repo_root)
     diff = parse_unified_diff(raw_diff)
 
-    # 4) Detect drift → render + post comment
-    drifts = detect_drift(spec_bundle, diff)
-    comment_body = format_drift_comment(drifts)
+    # 4) Detect drift → filter actionable → render + post comment
+    raw_drifts = detect_drift(spec_bundle, diff)
+    actionable, suppressed = filter_actionable_drift(raw_drifts)
+    total_reqs = len(spec_bundle.requirements)
+    addressed = total_reqs - len(raw_drifts)
+    footer = (
+        f"\n\n---\n"
+        f"**Coverage**: {addressed}/{total_reqs} requirements addressed by this PR · "
+        f"suppressed {suppressed['unrelated']} unrelated, "
+        f"{suppressed['non_goal']} non-goal items (L1 noise reduction)."
+    )
+    comment_body = format_drift_comment(actionable) + footer
     publish_pr_comment(
         http,
         owner=owner,
@@ -230,13 +239,17 @@ def main(argv: list[str] | None = None) -> int:
         pr_number=args.pr_number,
         body=comment_body,
     )
-    print(f"[drift] {len(drifts)}건 감지 · PR 코멘트 게시 완료")
+    print(
+        f"[drift] raw={len(raw_drifts)} actionable={len(actionable)} "
+        f"(suppressed unrelated={suppressed['unrelated']}, non_goal={suppressed['non_goal']})"
+    )
 
     # 5) Slack 알림 (실패해도 종료 코드는 0 유지)
     if slack_webhook:
         try:
             send_slack_webhook(
-                slack_webhook, _slack_summary(args.repo, args.pr_number, len(drifts))
+                slack_webhook,
+                _slack_summary(args.repo, args.pr_number, len(actionable)),
             )
         except Exception as e:
             print(f"WARN: Slack 알림 실패: {e}", file=sys.stderr)
