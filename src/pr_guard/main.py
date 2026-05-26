@@ -106,9 +106,23 @@ class OctokitAdapter:
 
 
 def _git_diff(base_ref: str, head_ref: str, *, repo_root: Path) -> str:
-    """Return unified diff between origin/base_ref and head_ref."""
+    """Return unified diff from origin/base_ref to the working tree.
+
+    GitHub Actions checks out the PR as a detached HEAD (or merge commit),
+    so the head ref may not exist as a local branch. Resolve to HEAD when
+    the named head ref isn't reachable.
+    """
+    head = head_ref
+    probe = subprocess.run(
+        ["git", "rev-parse", "--verify", head_ref],
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+    )
+    if probe.returncode != 0:
+        head = "HEAD"
     result = subprocess.run(
-        ["git", "diff", f"origin/{base_ref}...{head_ref}"],
+        ["git", "diff", f"origin/{base_ref}...{head}"],
         capture_output=True,
         text=True,
         check=True,
