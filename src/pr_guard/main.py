@@ -27,14 +27,16 @@ from .diff_extractor import parse_unified_diff
 from .drift import DriftItem, detect_drift, filter_actionable_drift
 from .fix_pr import create_fix_pr
 from .github_client import create_github_client
+from .guard_report import build_guard_report, write_guard_report
+from .llm_provider import LLMProvider, resolve_llm_provider
 from .onboarding_orchestrator import run_onboarding
-from .patcher import generate_code_fix_proposal, generate_seed_fix
 from .publish import publish_pr_comment
 from .slack_notify import send_slack_webhook
 from .spec_parser import parse_repo
 
 
 MAX_FIX_PRS_DEFAULT = 3
+PR_COMMENT_MARKER = "<!-- pr-guard:drift-report -->"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -159,16 +161,6 @@ def _slack_summary(repo: str, pr_number: int, drift_count: int) -> dict:
     return {"text": text}
 
 
-class _AnthropicMessagesAdapter:
-    """patcher.ClaudeClient Protocol (has .create) → anthropic SDK shape."""
-
-    def __init__(self, anthropic_client: Any) -> None:
-        self._c = anthropic_client
-
-    def create(self, **kwargs: Any) -> Any:
-        return self._c.messages.create(**kwargs)
-
-
 def _maybe_generate_fix_prs(
     *,
     actionable: list[DriftItem],
@@ -179,7 +171,7 @@ def _maybe_generate_fix_prs(
     repo_root: Path,
     base_ref: str,
     base_sha: str,
-    anthropic_key: str,
+    provider: LLMProvider,
     max_fixes: int,
 ) -> list[tuple[DriftItem, int]]:
     """Generate up to ``max_fixes`` fix-PRs from actionable drifts.
@@ -188,15 +180,6 @@ def _maybe_generate_fix_prs(
     stderr and skipped — never raised, so a flaky fix-PR step can't
     break the primary drift-comment flow.
     """
-    # anthropic SDK는 옵션이라 늦은 import (없어도 main flow 정상 동작)
-    try:
-        from anthropic import Anthropic
-    except ImportError:
-        print("WARN: anthropic SDK 미설치 → fix-PR 생성 스킵", file=sys.stderr)
-        return []
-
-    claude = _AnthropicMessagesAdapter(Anthropic(api_key=anthropic_key))
-
     seed_md = repo_root / "SEED.md"
     seed_md_text = seed_md.read_text(encoding="utf-8") if seed_md.exists() else ""
 
@@ -207,18 +190,16 @@ def _maybe_generate_fix_prs(
     for drift in actionable[:max_fixes]:
         try:
             if drift.source == "seed":
-                proposal = generate_seed_fix(
-                    drift, seed_md_text=seed_md_text, client=claude
-                )
+                proposal = provider.generate_seed_fix(drift, seed_md_text=seed_md_text)
             elif drift.source == "prd":
-                proposal = generate_code_fix_proposal(
-                    drift, repo_context=repo_context, client=claude
+                proposal = provider.generate_code_fix_proposal(
+                    drift, repo_context=repo_context
                 )
             else:
                 continue
             if proposal is None:
                 print(
-                    f"[fix-pr] Claude declined: {drift.quote[:50]!r}",
+                    f"[fix-pr] provider declined: {drift.quote[:50]!r}",
                     file=sys.stderr,
                 )
                 continue
@@ -274,11 +255,22 @@ def main(argv: list[str] | None = None) -> int:
         default=Path.cwd(),
         help="Checked-out PR working tree (default: cwd)",
     )
+    parser.add_argument("--json-output", type=Path, help="Write structured guard report JSON")
+    parser.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Dry-run gate mode: skip GitHub/Slack/onboarding/fix-PR side effects",
+    )
+    parser.add_argument(
+        "--fail-on-drift",
+        action="store_true",
+        help="Return nonzero when the structured report verdict is not pass",
+    )
     args = parser.parse_args(argv)
 
     gh_token = os.environ.get("GITHUB_TOKEN")
     slack_webhook = os.environ.get("SLACK_WEBHOOK_URL")
-    if not gh_token:
+    if not gh_token and not args.no_publish:
         print("ERROR: GITHUB_TOKEN env var 필요", file=sys.stderr)
         return 1
 
@@ -287,12 +279,29 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     owner, repo_name = args.repo.split("/", 1)
 
-    http = create_github_client(gh_token)
-    octokit = OctokitAdapter(http)
+    http = create_github_client(gh_token) if gh_token and not args.no_publish else None
+    octokit = OctokitAdapter(http) if http is not None else None
 
     # 1) PRD/SEED 존재 여부 → 없으면 onboarding PR 생성 후 종료
     presence = detect_spec_files(args.repo_root)
     if not (presence["prd"] and presence["seed"]):
+        if args.no_publish:
+            report = build_guard_report(
+                repo=args.repo,
+                pr_number=args.pr_number,
+                actionable_drifts=[],
+                fix_prs=[],
+                suppressed={"unrelated": 0, "non_goal": 0},
+            )
+            report["summary"] = "PRD/SEED missing; onboarding side effects skipped by --no-publish."
+            if args.json_output:
+                write_guard_report(report, args.json_output)
+            print("[onboarding] skipped: PRD/SEED missing (--no-publish)")
+            return 0 if not args.fail_on_drift or report["verdict"] == "pass" else 1
+
+        if octokit is None:
+            print("ERROR: GitHub client unavailable for onboarding", file=sys.stderr)
+            return 1
         base_sha = _git_rev_parse(f"origin/{args.base_ref}", repo_root=args.repo_root)
         result = run_onboarding(
             octokit,
@@ -329,11 +338,11 @@ def main(argv: list[str] | None = None) -> int:
     total_reqs = len(spec_bundle.requirements)
     addressed = total_reqs - len(raw_drifts)
 
-    # 4a) Fix-PR 자동 생성 (옵션: ANTHROPIC_API_KEY 설정 시에만)
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY") or ""
+    # 4a) Fix-PR 자동 생성 (Hermes webhook preferred; Anthropic fallback)
+    provider = None if args.no_publish else resolve_llm_provider(os.environ)
     max_fixes = int(os.environ.get("PR_GUARD_MAX_FIX_PRS", str(MAX_FIX_PRS_DEFAULT)))
     fix_prs: list[tuple[DriftItem, int]] = []
-    if anthropic_key and actionable and max_fixes > 0:
+    if provider is not None and actionable and max_fixes > 0 and octokit is not None:
         base_sha = _git_rev_parse(f"origin/{args.base_ref}", repo_root=args.repo_root)
         fix_prs = _maybe_generate_fix_prs(
             actionable=actionable,
@@ -344,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=args.repo_root,
             base_ref=args.base_ref,
             base_sha=base_sha,
-            anthropic_key=anthropic_key,
+            provider=provider,
             max_fixes=max_fixes,
         )
 
@@ -362,25 +371,38 @@ def main(argv: list[str] | None = None) -> int:
         footer_parts.append(
             f"\n**Auto-generated fix PRs** ({len(fix_prs)}):\n{fix_list}"
         )
-    elif anthropic_key and actionable:
+    elif provider is not None and actionable:
         footer_parts.append(
-            "\n_(no fix PRs created — Claude declined or generation hit an error; "
+            "\n_(no fix PRs created — LLM provider declined or generation hit an error; "
             "see Actions logs)_"
         )
-    elif actionable and not anthropic_key:
+    elif actionable and provider is None:
         footer_parts.append(
-            "\n_(set `ANTHROPIC_API_KEY` secret to enable auto fix-PR generation)_"
+            "\n_(set `HERMES_PR_GUARD_WEBHOOK_URL` (preferred) or `ANTHROPIC_API_KEY` "
+            "to enable auto fix-PR generation)_"
         )
     footer = "\n\n---\n" + "\n".join(footer_parts)
 
-    comment_body = format_drift_comment(actionable) + footer
-    publish_pr_comment(
-        http,
-        owner=owner,
-        repo=repo_name,
+    report = build_guard_report(
+        repo=args.repo,
         pr_number=args.pr_number,
-        body=comment_body,
+        actionable_drifts=actionable,
+        fix_prs=fix_prs,
+        suppressed=suppressed,
     )
+    if args.json_output:
+        write_guard_report(report, args.json_output)
+
+    comment_body = format_drift_comment(actionable) + footer
+    if not args.no_publish and http is not None:
+        publish_pr_comment(
+            http,
+            owner=owner,
+            repo=repo_name,
+            pr_number=args.pr_number,
+            body=comment_body,
+            marker=PR_COMMENT_MARKER,
+        )
     print(
         f"[drift] raw={len(raw_drifts)} actionable={len(actionable)} "
         f"fix_prs={len(fix_prs)} "
@@ -388,7 +410,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # 5) Slack 알림 (실패해도 종료 코드는 0 유지)
-    if slack_webhook:
+    if slack_webhook and not args.no_publish:
         try:
             send_slack_webhook(
                 slack_webhook,
@@ -397,6 +419,8 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             print(f"WARN: Slack 알림 실패: {e}", file=sys.stderr)
 
+    if args.fail_on_drift and report["verdict"] != "pass":
+        return 1
     return 0
 
 

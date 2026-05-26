@@ -97,3 +97,38 @@ def test_publish_pr_comment_returns_parsed_json_on_200():
         client, owner="o", repo="r", pr_number=5, body="ok"
     )
     assert result == {"id": 99}
+
+
+def test_publish_pr_comment_updates_existing_marker_comment():
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": 101, "body": "<!-- pr-guard:drift-report -->\nold report"},
+                    {"id": 202, "body": "unrelated"},
+                ],
+            )
+        if request.method == "PATCH":
+            payload = json.loads(request.content.decode())
+            return httpx.Response(200, json={"id": 101, "body": payload["body"]})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    client = _make_client(handler)
+    result = publish_pr_comment(
+        client,
+        owner="octocat",
+        repo="hello",
+        pr_number=7,
+        body="new report",
+        marker="<!-- pr-guard:drift-report -->",
+    )
+
+    assert seen == [
+        ("GET", "/repos/octocat/hello/issues/7/comments"),
+        ("PATCH", "/repos/octocat/hello/issues/comments/101"),
+    ]
+    assert result["body"] == "<!-- pr-guard:drift-report -->\nnew report"

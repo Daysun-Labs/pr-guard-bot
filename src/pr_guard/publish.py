@@ -31,6 +31,7 @@ def publish_pr_comment(
     repo: str,
     pr_number: int,
     body: str,
+    marker: str | None = None,
 ) -> dict[str, Any]:
     """Post a comment to a pull request.
 
@@ -40,6 +41,9 @@ def publish_pr_comment(
         repo: Repository name.
         pr_number: Pull request number.
         body: Markdown body of the comment.
+        marker: Optional HTML marker. When present, pr-guard updates the first
+            existing PR comment containing the marker instead of posting a new
+            comment on every run.
 
     Returns:
         Parsed JSON response from GitHub (the created comment).
@@ -58,7 +62,16 @@ def publish_pr_comment(
         raise ValueError("body must be a non-empty string")
 
     path = f"/repos/{owner}/{repo}/issues/{pr_number}/comments"
-    response = client.post(path, json={"body": body})
+    publish_body = _with_marker(body, marker)
+    existing_id = _find_existing_marker_comment(client, path=path, marker=marker)
+
+    if existing_id is not None:
+        response = client.patch(
+            f"/repos/{owner}/{repo}/issues/comments/{existing_id}",
+            json={"body": publish_body},
+        )
+    else:
+        response = client.post(path, json={"body": publish_body})
 
     if response.status_code >= 400:
         try:
@@ -69,3 +82,36 @@ def publish_pr_comment(
         raise PublishError(response.status_code, msg)
 
     return response.json()
+
+
+def _with_marker(body: str, marker: str | None) -> str:
+    if not marker:
+        return body
+    return body if marker in body else f"{marker}\n{body}"
+
+
+def _find_existing_marker_comment(
+    client: httpx.Client,
+    *,
+    path: str,
+    marker: str | None,
+) -> int | None:
+    if not marker:
+        return None
+
+    response = client.get(path, params={"per_page": 100})
+    if response.status_code >= 400:
+        return None
+    try:
+        comments = response.json()
+    except Exception:
+        return None
+    if not isinstance(comments, list):
+        return None
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        if marker in str(comment.get("body", "")):
+            comment_id = comment.get("id")
+            return int(comment_id) if comment_id is not None else None
+    return None
