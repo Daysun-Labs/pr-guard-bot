@@ -1,0 +1,75 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# pr-guard — GitHub Actions skeleton
+#
+# 이 workflow를 본인의 각 제품 리포의 .github/workflows/에 복사하면,
+# PR 이벤트가 발생할 때마다 pr-guard-bot이 PRD.md+SEED.md를 읽고
+# PR diff와 대조하여 코멘트·Slack 알림·수정 PR을 생성한다.
+#
+# 필요한 secrets:
+#   ANTHROPIC_API_KEY    — LLM 분석용 (Claude)
+#   SLACK_WEBHOOK_URL    — Slack incoming webhook URL
+# GITHUB_TOKEN은 자동 주입됨 (write 권한 명시 필요)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+name: pr-guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # 봇이 만든 PR은 무한 루프 방지를 위해 검증 skip
+    # (main.py에서 label 'pr-guard:skip' 검사)
+
+# 봇이 코멘트 작성·수정 PR 생성을 위해 필요한 권한
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+# 동일 PR에 여러 push가 들어와도 직전 실행은 취소
+concurrency:
+  group: pr-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: PR Guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10  # MVP SLA: 5분, 마진 2배
+
+    # 봇 자신이 만든 PR은 검증 skip
+    if: |
+      !contains(github.event.pull_request.labels.*.name, 'pr-guard:skip') &&
+      !startsWith(github.head_ref, 'pr-guard/')
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # diff 계산을 위해 full history
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pr-guard
+        run: |
+          # 실제로는 본인 리포 또는 PyPI 배포에서 설치
+          # MVP: GitHub raw로 직접 설치
+          pip install "git+https://github.com/<your-username>/pr-guard-bot.git#main"
+
+      - name: Run PR Guard
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          python -m pr_guard \
+            --repo "$REPO" \
+            --pr-number "$PR_NUMBER" \
+            --base-ref "$BASE_REF" \
+            --head-ref "$HEAD_REF"

@@ -1,0 +1,128 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Crystallized Seed v1.0 — pr-guard-bot
+# Generated from Ouroboros tutorial interview (9 rounds, Path B / plugin mode)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+goal: |
+  본인이 다양한 AI 코딩 도구(Claude Code, Codex, Hermes 등)로 Vibecoding
+  하면서도, 만드는 모든 제품이 각 리포의 PRD/SEED가 정의한 Production
+  기준을 충족하도록 GitHub PR 단위로 검증·교정해주는 personal Ouroboros
+  GitHub adapter 봇.
+
+constraints:
+  - 단일 사용자(본인)용 personal tool — multi-tenant/SaaS/결제 일체 불필요
+  - 봇은 어떤 성공 기준도 hardcode 하지 않음 (per-repo PRD/SEED 기반만)
+  - 호스팅은 GitHub Actions only — 별도 서버/VPS 금지
+  - 원본 PR 직접 수정 금지 — 수정은 반드시 별도 "수정 PR"로
+  - Vibe 보호 — 비동기 PR-after 동작만, 실시간 코딩 인터럽트 금지
+  - Stack-agnostic 출발, oracle은 사용하며 점진 추가
+  - Ouroboros 핵심 명령(ooo interview/seed/evaluate)을 내부 재사용
+
+acceptance_criteria:
+  - 임의 리포의 PR 이벤트 → 5분 내 Slack 알림 도착
+  - PRD/SEED 대비 drift ≥1건 감지 시 PR 코멘트 + 분류된 수정 PR 자동 생성
+  - drift가 PRD(의도)와 어김이면 "code-fix" PR 생성
+  - drift가 SEED(구현 명세)와 어김이면 "seed-fix" PR 생성
+  - PRD/SEED 없는 리포는 "ooo interview 실행" 안내 PR 자동 생성
+  - 30일간 본인의 모든 제품 PR이 이 파이프라인을 통과
+  - L1 정적 정합성 oracle (PR diff ↔ PRD/SEED) 기본 동작
+
+ontology_schema:
+  name: PRGuardSession
+  description: |
+    단일 GitHub PR을 PRD/SEED 명세와 대조하여 drift를 감지하고
+    분류된 수정 PR을 생성하는 봇의 작업 단위.
+  fields:
+    - name: pr_metadata
+      type: object
+      description: PR 번호·repo·author·branch·diff URL
+    - name: prd_intent
+      type: object
+      description: 파싱된 PRD.md (target·value·success·scale)
+    - name: seed_spec
+      type: object
+      description: 파싱된 SEED.md (constraints·acceptance·ontology)
+    - name: diff_analysis
+      type: object
+      description: PR diff와 PRD/SEED의 의미 정합성 분석
+    - name: drift_findings
+      type: array
+      description: "{type, severity, source:prd|seed, quote, location}"
+    - name: fix_pr_proposals
+      type: array
+      description: "{kind:code|seed, patch, rationale}"
+    - name: notification_payload
+      type: object
+      description: Slack incoming-webhook 메시지 페이로드
+    - name: oracle_level_used
+      type: string
+      description: "L1 | L2 | L3"
+    - name: repo_health_state
+      type: string
+      description: "no_prd_seed | drift_detected | aligned"
+
+evaluation_principles:
+  - name: vibe_preservation
+    description: 비동기·PR-after, 코딩 흐름 인터럽트 절대 금지
+    weight: 0.95
+  - name: spec_grounded
+    description: 자체 기준 없음 — 오직 per-repo PRD/SEED 기반으로만 판정
+    weight: 0.95
+  - name: classification_accuracy
+    description: drift가 PRD(의도) vs SEED(구현)와 어김을 정확히 분류
+    weight: 0.90
+  - name: non_destructive
+    description: 원본 PR/리포 미변경, 모든 수정 제안은 별도 PR로만
+    weight: 0.90
+  - name: zero_infra
+    description: GitHub Actions 외 인프라 추가 금지
+    weight: 0.85
+  - name: ouroboros_reuse
+    description: 가능한 곳마다 ooo interview/seed/evaluate 재사용
+    weight: 0.80
+  - name: personal_pragmatism
+    description: multi-tenant·SaaS·결제·온보딩 흐름 일체 추가 금지
+    weight: 0.75
+
+exit_conditions:
+  - name: mvp_shipping
+    description: 첫 정상 동작 사이클
+    criteria: 임의 리포 PR에 5분 내 Slack 알림 + 코멘트 생성
+  - name: classified_fix
+    description: 분류 정확
+    criteria: PRD 위반 → code-fix PR, SEED 위반 → seed-fix PR 자동 분류 동작
+  - name: onboarding_flow
+    description: 신규 리포 안내
+    criteria: PRD/SEED 없는 리포에 "ooo interview" 안내 PR이 자동 생성됨
+  - name: thirty_day_adoption
+    description: 실제 사용 정착
+    criteria: 30일간 본인의 모든 제품 PR이 봇 파이프라인을 통과
+
+project_type: greenfield
+
+context_references:
+  - path: /Users/ds/.claude/plugins/cache/ouroboros/ouroboros/0.30.0
+    role: primary
+    summary: Ouroboros core — ooo interview/seed/evaluate 재사용 대상
+  - path: https://github.com/Q00/ouroboros
+    role: reference
+    summary: Ouroboros GitHub 리포 (adapter 통합 지점)
+
+existing_patterns:
+  - Ouroboros 3-stage evaluation (mechanical → semantic → consensus)
+  - Ouroboros Socratic interview Path A/B 분기
+  - Seed YAML 명세 포맷
+  - GitHub Actions trigger on pull_request
+
+existing_dependencies:
+  - ouroboros-ai (Python >= 3.12, pip/pipx/uvx)
+  - claude-agent-sdk
+  - GitHub Actions runner
+  - Slack incoming webhook
+
+metadata:
+  version: 1.0
+  ambiguity_score: 0.05
+  generated_at: 2026-05-26
+  interview_method: plugin-mode (Path B, MCP unavailable in this session)
+  source: Ouroboros tutorial — 9 rounds

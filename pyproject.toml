@@ -1,0 +1,38 @@
+[project]
+name = "pr-guard"
+version = "0.1.0"
+description = "Personal Ouroboros GitHub adapter — PR-level intent vs implementation drift detector"
+requires-python = ">=3.12"
+authors = [{ name = "darbykim" }]
+license = { text = "Proprietary (personal use only)" }
+readme = "README.md"
+
+dependencies = [
+    "ouroboros-ai[claude]>=0.30.0",
+    "claude-agent-sdk>=0.5",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    # GitHub API
+    "PyGithub>=2.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+pr-guard = "pr_guard.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pr_guard"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
