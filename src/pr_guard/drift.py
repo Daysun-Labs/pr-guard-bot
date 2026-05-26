@@ -32,6 +32,10 @@ _SEVERITY_BY_KIND = {
     "intent": "medium",
 }
 
+# Below this floor, overlap is usually just generic vocabulary ("PR", "user",
+# "tool") rather than evidence that the PR is attempting the requirement.
+ACTIONABLE_SCORE_FLOOR = 0.34
+
 
 @dataclass(frozen=True)
 class DriftItem:
@@ -89,9 +93,10 @@ def filter_actionable_drift(
 
     Suppressed by default:
       - ``kind == "non_goal"`` — definitionally something the bot should NOT do
-      - ``score == 0`` — no token/file/symbol overlap with the diff, i.e. the
-        requirement is simply unrelated to this PR's scope. Carrying these into
-        the PR comment produces noise on every small PR.
+      - weak token-only overlap below ``ACTIONABLE_SCORE_FLOOR`` — usually a
+        shared word such as "PR" or "user" rather than evidence that this PR is
+        attempting the requirement. Carrying these into the PR comment produces
+        noise on every small PR.
 
     Returns ``(actionable, suppressed)`` where ``suppressed`` is a count map::
 
@@ -103,7 +108,7 @@ def filter_actionable_drift(
         if d.kind == "non_goal":
             suppressed["non_goal"] += 1
             continue
-        if d.score <= 0.0:
+        if d.score < ACTIONABLE_SCORE_FLOOR:
             suppressed["unrelated"] += 1
             continue
         actionable.append(d)

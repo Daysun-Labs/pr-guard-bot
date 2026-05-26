@@ -122,11 +122,11 @@ def test_filter_drops_non_goals() -> None:
     assert suppressed == {"non_goal": 1, "unrelated": 0}
 
 
-def test_filter_drops_zero_score_unrelated() -> None:
-    items = [_drift(score=0.0), _drift(score=0.0), _drift(score=0.2)]
+def test_filter_drops_weak_score_unrelated() -> None:
+    items = [_drift(score=0.0), _drift(score=0.2), _drift(score=0.34)]
     actionable, suppressed = filter_actionable_drift(items)
     assert len(actionable) == 1
-    assert actionable[0].score == 0.2
+    assert actionable[0].score == 0.34
     assert suppressed == {"non_goal": 0, "unrelated": 2}
 
 
@@ -136,7 +136,7 @@ def test_filter_empty_input() -> None:
     assert suppressed == {"non_goal": 0, "unrelated": 0}
 
 
-def test_filter_keeps_partial_match_violations() -> None:
-    items = [_drift(score=0.1), _drift(score=0.33), _drift(score=0.99)]
+def test_filter_keeps_relevant_partial_match_violations() -> None:
+    items = [_drift(score=0.1), _drift(score=0.33), _drift(score=0.34), _drift(score=0.99)]
     actionable, _ = filter_actionable_drift(items)
-    assert len(actionable) == 3
+    assert [d.score for d in actionable] == [0.34, 0.99]
