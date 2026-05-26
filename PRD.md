@@ -38,10 +38,11 @@ GitHub PR 단위로 검증·교정해주는 personal 봇.
 
 | # | 기준 | 측정 방법 |
 |---|---|---|
-| 1 | 봇이 PR에 5분 내 응답 | 임의 리포 PR 생성 → Slack 알림 도착 시각 |
-| 2 | drift 감지 시 분류된 수정 PR 생성 | 의도적 drift PR 시나리오 30개 중 ≥27개 정확 분류 |
-| 3 | PRD/SEED 없는 리포에 안내 PR 생성 | 빈 리포 PR → "ooo interview 실행" 코멘트 |
-| 4 | 30일 정착 | 본인의 모든 제품 리포 PR이 이 봇을 통과 |
+| 1 | 봇이 PR에 5분 내 응답하고 PR Guard 코멘트와 Slack incoming-webhook 알림을 게시 | 임의 리포 PR 생성 → GitHub Actions 로그, PR 코멘트, Slack 알림 도착 시각 |
+| 2 | drift 감지 시 구조화된 pr-guard-report.json, 분류된 PR 코멘트, fail-on-drift 종료코드가 일관됨 | 의도적 drift PR 시나리오에서 JSON verdict=fail, drift_count ≥1, Action 실패 확인 |
+| 3 | Hermes webhook이 설정되면 Hermes Agent가 code-fix 또는 seed-fix 수정 PR 생성을 제안·대행 | HERMES_PR_GUARD_WEBHOOK_URL/TOKEN 설정 후 provider 호출과 fix PR 링크 확인 |
+| 4 | PRD/SEED 없는 리포에 안내 PR 또는 안내 코멘트 생성 | 빈 리포 PR → "ooo interview 실행" 안내 확인 |
+| 5 | 30일 정착 | 본인의 모든 제품 리포 PR이 PR Guard 파이프라인을 통과 |
 
 ## 규모 가정
 
@@ -49,15 +50,17 @@ GitHub PR 단위로 검증·교정해주는 personal 봇.
 - 봇이 watch 하는 리포: 5~20개 (본인의 사이드/프로덕트들)
 - 처리량: 일 평균 PR 0~10건
 - 응답 SLA: 5분 (GitHub Actions cold start 포함)
-- 비용: GitHub Actions 무료 티어 + Slack 무료 + LLM 토큰 비용만
+- 비용: GitHub Actions 무료 티어 + Slack 무료 + Hermes/LLM 토큰 비용만
 
-## 봇과 Ouroboros의 관계
+## 봇과 Hermes/Ouroboros의 관계
 
-봇은 Ouroboros의 **GitHub adapter**:
-- 봇 자체는 이벤트 어댑터 + UX wrapper일 뿐
-- 핵심 분석은 `ooo evaluate` (3-stage 파이프라인) 재사용
-- 인터뷰는 `ooo interview` 재사용
-- 신규 리포의 첫 PRD/SEED는 `ooo seed`로 생성
+봇은 GitHub Actions에서 deterministic PR Guard 게이트를 실행하고,
+선택적 semantic/fix 단계는 Hermes Agent webhook 뒤로 위임한다.
+
+- GitHub Actions는 PR diff, PRD.md, SEED.md, SEED.yaml을 읽고 정적 drift report를 만든다.
+- Hermes Agent는 webhook provider로 붙어 code-fix 또는 seed-fix 제안을 생성할 수 있다.
+- Ouroboros는 Hermes 뒤의 선택적 semantic/evaluation engine으로 재사용한다.
+- 신규 리포의 첫 PRD/SEED는 여전히 `ooo interview` / `ooo seed`로 만들 수 있다.
 
 ## Open Questions (운영하며 결정)
 
