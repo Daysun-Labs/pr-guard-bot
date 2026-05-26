@@ -24,12 +24,17 @@ import httpx
 from .comment_format import format_drift_comment
 from .detector import detect_spec_files
 from .diff_extractor import parse_unified_diff
-from .drift import detect_drift, filter_actionable_drift
+from .drift import DriftItem, detect_drift, filter_actionable_drift
+from .fix_pr import create_fix_pr
 from .github_client import create_github_client
 from .onboarding_orchestrator import run_onboarding
+from .patcher import generate_code_fix_proposal, generate_seed_fix
 from .publish import publish_pr_comment
 from .slack_notify import send_slack_webhook
 from .spec_parser import parse_repo
+
+
+MAX_FIX_PRS_DEFAULT = 3
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -154,6 +159,104 @@ def _slack_summary(repo: str, pr_number: int, drift_count: int) -> dict:
     return {"text": text}
 
 
+class _AnthropicMessagesAdapter:
+    """patcher.ClaudeClient Protocol (has .create) → anthropic SDK shape."""
+
+    def __init__(self, anthropic_client: Any) -> None:
+        self._c = anthropic_client
+
+    def create(self, **kwargs: Any) -> Any:
+        return self._c.messages.create(**kwargs)
+
+
+def _maybe_generate_fix_prs(
+    *,
+    actionable: list[DriftItem],
+    octokit: Any,
+    owner: str,
+    repo_name: str,
+    source_pr_number: int,
+    repo_root: Path,
+    base_ref: str,
+    base_sha: str,
+    anthropic_key: str,
+    max_fixes: int,
+) -> list[tuple[DriftItem, int]]:
+    """Generate up to ``max_fixes`` fix-PRs from actionable drifts.
+
+    Returns a list of ``(drift, new_pr_number)``. Failures are logged to
+    stderr and skipped — never raised, so a flaky fix-PR step can't
+    break the primary drift-comment flow.
+    """
+    # anthropic SDK는 옵션이라 늦은 import (없어도 main flow 정상 동작)
+    try:
+        from anthropic import Anthropic
+    except ImportError:
+        print("WARN: anthropic SDK 미설치 → fix-PR 생성 스킵", file=sys.stderr)
+        return []
+
+    claude = _AnthropicMessagesAdapter(Anthropic(api_key=anthropic_key))
+
+    seed_md = repo_root / "SEED.md"
+    seed_md_text = seed_md.read_text(encoding="utf-8") if seed_md.exists() else ""
+
+    # 코드 패치 컨텍스트는 가벼운 repo overview만 (Claude가 디렉토리 구조로 추론)
+    repo_context = _repo_overview(repo_root)
+
+    created: list[tuple[DriftItem, int]] = []
+    for drift in actionable[:max_fixes]:
+        try:
+            if drift.source == "seed":
+                proposal = generate_seed_fix(
+                    drift, seed_md_text=seed_md_text, client=claude
+                )
+            elif drift.source == "prd":
+                proposal = generate_code_fix_proposal(
+                    drift, repo_context=repo_context, client=claude
+                )
+            else:
+                continue
+            if proposal is None:
+                print(
+                    f"[fix-pr] Claude declined: {drift.quote[:50]!r}",
+                    file=sys.stderr,
+                )
+                continue
+            branch, pr_num = create_fix_pr(
+                octokit,
+                owner=owner,
+                repo=repo_name,
+                drift=drift,
+                change=proposal.change,
+                rationale=proposal.rationale,
+                base_sha=base_sha,
+                default_branch=base_ref,
+                source_pr_number=source_pr_number,
+            )
+            print(f"[fix-pr] #{pr_num} ({branch})")
+            created.append((drift, pr_num))
+        except Exception as e:
+            print(f"WARN: fix-PR 생성 실패 ({drift.quote[:30]!r}): {e}", file=sys.stderr)
+    return created
+
+
+def _repo_overview(repo_root: Path, *, max_files: int = 80) -> str:
+    """Return a short tree summary so Claude can ground proposals in real paths."""
+    paths: list[str] = []
+    skip_dirs = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache"}
+    for path in sorted(repo_root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(repo_root)
+        if any(part in skip_dirs for part in rel.parts):
+            continue
+        paths.append(str(rel))
+        if len(paths) >= max_files:
+            paths.append(f"... ({len(paths)}+ files truncated)")
+            break
+    return "\n".join(paths)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Entrypoint
 # ──────────────────────────────────────────────────────────────────────────
@@ -225,12 +328,51 @@ def main(argv: list[str] | None = None) -> int:
     actionable, suppressed = filter_actionable_drift(raw_drifts)
     total_reqs = len(spec_bundle.requirements)
     addressed = total_reqs - len(raw_drifts)
-    footer = (
-        f"\n\n---\n"
+
+    # 4a) Fix-PR 자동 생성 (옵션: ANTHROPIC_API_KEY 설정 시에만)
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY") or ""
+    max_fixes = int(os.environ.get("PR_GUARD_MAX_FIX_PRS", str(MAX_FIX_PRS_DEFAULT)))
+    fix_prs: list[tuple[DriftItem, int]] = []
+    if anthropic_key and actionable and max_fixes > 0:
+        base_sha = _git_rev_parse(f"origin/{args.base_ref}", repo_root=args.repo_root)
+        fix_prs = _maybe_generate_fix_prs(
+            actionable=actionable,
+            octokit=octokit,
+            owner=owner,
+            repo_name=repo_name,
+            source_pr_number=args.pr_number,
+            repo_root=args.repo_root,
+            base_ref=args.base_ref,
+            base_sha=base_sha,
+            anthropic_key=anthropic_key,
+            max_fixes=max_fixes,
+        )
+
+    footer_parts = [
         f"**Coverage**: {addressed}/{total_reqs} requirements addressed by this PR · "
         f"suppressed {suppressed['unrelated']} unrelated, "
-        f"{suppressed['non_goal']} non-goal items (L1 noise reduction)."
-    )
+        f"{suppressed['non_goal']} non-goal items (L1 noise reduction).",
+    ]
+    if fix_prs:
+        fix_list = "\n".join(
+            f"- #{n} — `{d.source.upper()}:{d.source_file}:{d.line}` "
+            f"({'code-fix' if d.source == 'prd' else 'seed-fix'})"
+            for d, n in fix_prs
+        )
+        footer_parts.append(
+            f"\n**Auto-generated fix PRs** ({len(fix_prs)}):\n{fix_list}"
+        )
+    elif anthropic_key and actionable:
+        footer_parts.append(
+            "\n_(no fix PRs created — Claude declined or generation hit an error; "
+            "see Actions logs)_"
+        )
+    elif actionable and not anthropic_key:
+        footer_parts.append(
+            "\n_(set `ANTHROPIC_API_KEY` secret to enable auto fix-PR generation)_"
+        )
+    footer = "\n\n---\n" + "\n".join(footer_parts)
+
     comment_body = format_drift_comment(actionable) + footer
     publish_pr_comment(
         http,
@@ -241,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(
         f"[drift] raw={len(raw_drifts)} actionable={len(actionable)} "
+        f"fix_prs={len(fix_prs)} "
         f"(suppressed unrelated={suppressed['unrelated']}, non_goal={suppressed['non_goal']})"
     )
 
