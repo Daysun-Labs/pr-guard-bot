@@ -1,185 +1,143 @@
 """pr-guard entrypoint — invoked from GitHub Actions on pull_request events.
 
-This is a SKELETON. The actual L1 oracle implementation (ooo evaluate
-integration), drift classification, and fix-PR generation logic are
-intentionally left as TODOs — these will be implemented through the
-bot's own dogfooding cycle (interview → seed → run → evolve).
+파이프라인:
+  1. PRD/SEED 존재 여부 검사 → 없으면 onboarding PR 생성 후 종료
+  2. PRD + SEED 파싱 → Requirement 추출
+  3. PR diff 추출 → NormalizedDiff
+  4. drift 감지 + 코멘트 렌더 + PR 코멘트 게시
+  5. Slack 알림 (옵션)
 
-Architecture: see SEED.md "아키텍처" section.
+Fix-PR(code-fix/seed-fix) 자동 생성은 LLM 패치 생성이 필요하므로
+이번 라운드에서는 코멘트에 분류 결과만 첨부 — dogfood 라운드 2에서 추가.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any
 
-# ──────────────────────────────────────────────────────────────────────────
-# Data structures matching SEED.yaml ontology_schema (PRGuardSession)
-# ──────────────────────────────────────────────────────────────────────────
+import httpx
 
-
-@dataclass
-class PRMetadata:
-    repo: str
-    pr_number: int
-    base_ref: str
-    head_ref: str
-    diff_url: str | None = None
-
-
-@dataclass
-class DriftFinding:
-    type: str                          # e.g. "missing_acceptance_criterion"
-    severity: Literal["low", "medium", "high"]
-    source: Literal["prd", "seed"]
-    quote: str                         # PRD/SEED에서 위반된 문구
-    location: str | None = None        # PR 내 파일·라인 또는 PRD/SEED 위치
-
-
-@dataclass
-class FixPRProposal:
-    kind: Literal["code", "seed"]
-    rationale: str
-    patch: str | None = None           # unified diff (None이면 LLM이 생성 예정)
-
-
-@dataclass
-class PRGuardSession:
-    pr_metadata: PRMetadata
-    prd_intent: dict = field(default_factory=dict)
-    seed_spec: dict = field(default_factory=dict)
-    diff_analysis: dict = field(default_factory=dict)
-    drift_findings: list[DriftFinding] = field(default_factory=list)
-    fix_pr_proposals: list[FixPRProposal] = field(default_factory=list)
-    notification_payload: dict = field(default_factory=dict)
-    oracle_level_used: Literal["L1", "L2", "L3"] = "L1"
-    repo_health_state: Literal["no_prd_seed", "drift_detected", "aligned"] = "aligned"
+from .comment_format import format_drift_comment
+from .detector import detect_spec_files
+from .diff_extractor import parse_unified_diff
+from .drift import detect_drift
+from .github_client import create_github_client
+from .onboarding_orchestrator import run_onboarding
+from .publish import publish_pr_comment
+from .slack_notify import send_slack_webhook
+from .spec_parser import parse_repo
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Pipeline steps (see SEED.md "아키텍처" diagram)
+# Octokit-style adapter over httpx.Client
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def load_intent_docs(repo_root: Path) -> tuple[str | None, str | None]:
-    """Read PRD.md + SEED.md from the PR's checked-out tree.
+class _Pulls:
+    def __init__(self, http: httpx.Client) -> None:
+        self._http = http
 
-    Returns (prd_text, seed_text). Either may be None if the file is absent.
-    """
-    prd_path = repo_root / "PRD.md"
-    seed_path = repo_root / "SEED.md"
-    prd = prd_path.read_text(encoding="utf-8") if prd_path.exists() else None
-    seed = seed_path.read_text(encoding="utf-8") if seed_path.exists() else None
-    return prd, seed
+    def create(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        head: str,
+        base: str,
+        title: str,
+        body: str | None = None,
+        draft: bool = False,
+    ) -> dict:
+        payload: dict = {"head": head, "base": base, "title": title, "draft": draft}
+        if body is not None:
+            payload["body"] = body
+        r = self._http.post(f"/repos/{owner}/{repo}/pulls", json=payload)
+        r.raise_for_status()
+        return r.json()
+
+    def list(self, *, owner: str, repo: str, state: str = "open") -> list:
+        r = self._http.get(f"/repos/{owner}/{repo}/pulls", params={"state": state})
+        r.raise_for_status()
+        return r.json()
 
 
-def compute_pr_diff(base_ref: str, head_ref: str) -> str:
-    """Compute unified diff between base and head."""
+class _Git:
+    def __init__(self, http: httpx.Client) -> None:
+        self._http = http
+
+    def create_ref(self, *, owner: str, repo: str, ref: str, sha: str) -> dict:
+        r = self._http.post(
+            f"/repos/{owner}/{repo}/git/refs", json={"ref": ref, "sha": sha}
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+class _Repos:
+    def __init__(self, http: httpx.Client) -> None:
+        self._http = http
+
+    def create_or_update_file_contents(
+        self, *, owner: str, repo: str, path: str, **payload: Any
+    ) -> dict:
+        body = {k: v for k, v in payload.items() if v is not None}
+        r = self._http.put(f"/repos/{owner}/{repo}/contents/{path}", json=body)
+        r.raise_for_status()
+        return r.json()
+
+
+class OctokitAdapter:
+    """Minimal octokit-style facade over httpx.Client used by helper modules."""
+
+    def __init__(self, http: httpx.Client) -> None:
+        self._http = http
+        self.pulls = _Pulls(http)
+        self.git = _Git(http)
+        self.repos = _Repos(http)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _git_diff(base_ref: str, head_ref: str, *, repo_root: Path) -> str:
+    """Return unified diff between origin/base_ref and head_ref."""
     result = subprocess.run(
         ["git", "diff", f"origin/{base_ref}...{head_ref}"],
         capture_output=True,
         text=True,
         check=True,
+        cwd=repo_root,
     )
     return result.stdout
 
 
-def evaluate_drift(
-    *,
-    prd: str,
-    seed: str,
-    diff: str,
-    oracle_level: str = "L1",
-) -> list[DriftFinding]:
-    """L1 oracle: 정적 의미 정합성 분석.
-
-    TODO(dogfood-iteration-1):
-        - ooo evaluate MCP 호출 또는 claude-agent-sdk 직접 호출로 구현
-        - 입력: PRD/SEED 텍스트 + PR diff
-        - 출력: drift_findings 리스트 (PRD vs SEED 소스 명시)
-
-    L2/L3는 향후 도입.
-    """
-    raise NotImplementedError("L1 oracle: ooo evaluate 통합 — dogfood로 구현 예정")
-
-
-def classify_and_propose_fixes(
-    findings: list[DriftFinding],
-) -> list[FixPRProposal]:
-    """drift 분류 규칙 (SEED.md "Fix PR 분류 규칙" 참조).
-
-    PRD 위반 → code-fix, SEED 위반 → seed-fix.
-    """
-    proposals: list[FixPRProposal] = []
-    for f in findings:
-        if f.source == "prd":
-            proposals.append(
-                FixPRProposal(
-                    kind="code",
-                    rationale=f"PR이 PRD 의도와 어김: {f.quote}",
-                )
-            )
-        elif f.source == "seed":
-            proposals.append(
-                FixPRProposal(
-                    kind="seed",
-                    rationale=f"PR이 SEED 명세와 어김: {f.quote}",
-                )
-            )
-    return proposals
-
-
-def post_pr_comment(
-    *, repo: str, pr_number: int, body: str, gh_token: str
-) -> None:
-    """GitHub API로 PR 코멘트 작성."""
-    raise NotImplementedError("GitHub API 코멘트 작성 — PyGithub로 구현")
-
-
-def create_fix_pr(
-    *,
-    repo: str,
-    pr_number: int,
-    proposal: FixPRProposal,
-    gh_token: str,
-) -> str:
-    """수정 PR 생성. 브랜치 네이밍 규칙은 SEED.md 참조.
-
-    Returns: 생성된 수정 PR의 URL
-    """
-    branch_name = f"pr-guard/{proposal.kind}-fix/{pr_number}"
-    raise NotImplementedError(
-        f"수정 PR 생성: branch={branch_name}, kind={proposal.kind}"
+def _git_rev_parse(ref: str, *, repo_root: Path) -> str:
+    """Resolve a ref to its commit SHA."""
+    result = subprocess.run(
+        ["git", "rev-parse", ref],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=repo_root,
     )
+    return result.stdout.strip()
 
 
-def notify_slack(*, payload: dict, webhook_url: str) -> None:
-    """Slack incoming webhook 호출. 실패해도 main flow 중단 금지."""
-    import httpx
-
-    try:
-        httpx.post(webhook_url, json=payload, timeout=10).raise_for_status()
-    except Exception as e:
-        print(f"⚠️ Slack 알림 실패 (계속 진행): {e}", file=sys.stderr)
-
-
-def render_onboarding_comment() -> str:
-    """PRD/SEED 없는 리포에 보낼 안내 코멘트."""
-    return (
-        "👋 **pr-guard**: 이 리포에 `PRD.md` 또는 `SEED.md`가 없어 의도 기반 "
-        "검증을 수행할 수 없어요.\n\n"
-        "다음을 실행해 두 문서를 부트스트랩하세요:\n\n"
-        "```bash\n"
-        "ooo interview \"이 제품이 무엇이고 왜 만드는지 정의\"\n"
-        "ooo seed   # → PRD.md + SEED.md 생성\n"
-        "```\n\n"
-        "이 두 파일이 main 브랜치에 들어오면 다음 PR부터 자동 검증됩니다."
-    )
+def _slack_summary(repo: str, pr_number: int, drift_count: int) -> dict:
+    if drift_count == 0:
+        text = f":shield: `{repo}#{pr_number}` — 모든 PRD/SEED 요구사항 충족"
+    else:
+        text = (
+            f":shield: `{repo}#{pr_number}` — drift {drift_count}건 감지, "
+            f"PR 코멘트 게시됨"
+        )
+    return {"text": text}
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -207,85 +165,67 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: GITHUB_TOKEN env var 필요", file=sys.stderr)
         return 1
 
-    session = PRGuardSession(
-        pr_metadata=PRMetadata(
-            repo=args.repo,
-            pr_number=args.pr_number,
-            base_ref=args.base_ref,
-            head_ref=args.head_ref,
-        )
-    )
+    if "/" not in args.repo:
+        print(f"ERROR: --repo는 owner/name 형식이어야 함: {args.repo}", file=sys.stderr)
+        return 2
+    owner, repo_name = args.repo.split("/", 1)
 
-    # 1) Load PRD + SEED
-    prd, seed = load_intent_docs(args.repo_root)
-    if prd is None or seed is None:
-        session.repo_health_state = "no_prd_seed"
-        post_pr_comment(
-            repo=args.repo,
-            pr_number=args.pr_number,
-            body=render_onboarding_comment(),
-            gh_token=gh_token,
+    http = create_github_client(gh_token)
+    octokit = OctokitAdapter(http)
+
+    # 1) PRD/SEED 존재 여부 → 없으면 onboarding PR 생성 후 종료
+    presence = detect_spec_files(args.repo_root)
+    if not (presence["prd"] and presence["seed"]):
+        base_sha = _git_rev_parse(f"origin/{args.base_ref}", repo_root=args.repo_root)
+        result = run_onboarding(
+            octokit,
+            repo_root=args.repo_root,
+            owner=owner,
+            repo=repo_name,
+            full_name=args.repo,
+            default_branch=args.base_ref,
+            base_sha=base_sha,
         )
+        print(f"[onboarding] {result.status}: {result.reason or ''}")
         if slack_webhook:
-            notify_slack(
-                payload={
+            send_slack_webhook(
+                slack_webhook,
+                {
                     "text": (
-                        f"📭 `{args.repo}#{args.pr_number}` — PRD/SEED 없음, "
-                        f"안내 코멘트 전송."
+                        f":mailbox_with_no_mail: `{args.repo}#{args.pr_number}` — "
+                        f"PRD/SEED 없음 → onboarding: {result.status}"
                     )
                 },
-                webhook_url=slack_webhook,
             )
         return 0
 
-    session.prd_intent = {"raw": prd}
-    session.seed_spec = {"raw": seed}
+    # 2) Parse PRD + SEED
+    spec_bundle = parse_repo(args.repo_root)
 
-    # 2) Compute diff
-    diff = compute_pr_diff(args.base_ref, args.head_ref)
-    session.diff_analysis = {"unified_diff": diff}
+    # 3) Extract diff
+    raw_diff = _git_diff(args.base_ref, args.head_ref, repo_root=args.repo_root)
+    diff = parse_unified_diff(raw_diff)
 
-    # 3) Evaluate drift (L1)
-    findings = evaluate_drift(prd=prd, seed=seed, diff=diff)
-    session.drift_findings = findings
-
-    # 4) Classify & propose fixes
-    proposals = classify_and_propose_fixes(findings)
-    session.fix_pr_proposals = proposals
-    session.repo_health_state = "drift_detected" if findings else "aligned"
-
-    # 5) Notify
-    comment_body = json.dumps(
-        {
-            "drift_count": len(findings),
-            "fixes_proposed": [p.kind for p in proposals],
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-    post_pr_comment(
-        repo=args.repo,
+    # 4) Detect drift → render + post comment
+    drifts = detect_drift(spec_bundle, diff)
+    comment_body = format_drift_comment(drifts)
+    publish_pr_comment(
+        http,
+        owner=owner,
+        repo=repo_name,
         pr_number=args.pr_number,
-        body=f"## pr-guard report\n\n```json\n{comment_body}\n```",
-        gh_token=gh_token,
+        body=comment_body,
     )
-    for proposal in proposals:
-        create_fix_pr(
-            repo=args.repo,
-            pr_number=args.pr_number,
-            proposal=proposal,
-            gh_token=gh_token,
-        )
+    print(f"[drift] {len(drifts)}건 감지 · PR 코멘트 게시 완료")
+
+    # 5) Slack 알림 (실패해도 종료 코드는 0 유지)
     if slack_webhook:
-        notify_slack(
-            payload={
-                "text": (
-                    f"🛡 `{args.repo}#{args.pr_number}` — "
-                    f"drift {len(findings)}건, fix-PR {len(proposals)}건 생성"
-                )
-            },
-            webhook_url=slack_webhook,
-        )
+        try:
+            send_slack_webhook(
+                slack_webhook, _slack_summary(args.repo, args.pr_number, len(drifts))
+            )
+        except Exception as e:
+            print(f"WARN: Slack 알림 실패: {e}", file=sys.stderr)
 
     return 0
 
