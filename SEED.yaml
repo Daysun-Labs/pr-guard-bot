@@ -121,8 +121,8 @@ existing_dependencies:
   - Slack incoming webhook
 
 metadata:
-  version: 1.0
+  version: "1.0"
   ambiguity_score: 0.05
-  generated_at: 2026-05-26
-  interview_method: plugin-mode (Path B, MCP unavailable in this session)
-  source: Ouroboros tutorial — 9 rounds
+  generated_at: "2026-05-26"
+  interview_method: "plugin-mode (Path B, MCP unavailable in initial session)"
+  source: "Ouroboros tutorial — 9 rounds"
