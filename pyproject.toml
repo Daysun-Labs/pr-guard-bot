@@ -1,11 +1,16 @@
 [project]
 name = "pr-guard"
 version = "0.1.0"
-description = "Personal Ouroboros GitHub adapter — PR-level intent vs implementation drift detector"
+description = "PR-level intent vs implementation drift detector for AI-generated code"
 requires-python = ">=3.12"
 authors = [{ name = "darbykim" }]
-license = { text = "Proprietary (personal use only)" }
+license = { file = "LICENSE" }
 readme = "README.md"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
 
 dependencies = [
     "httpx>=0.27",
