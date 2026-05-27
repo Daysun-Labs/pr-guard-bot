@@ -26,6 +26,12 @@ GitHub PR 단위로 검증·교정해주는 personal 봇.
 | 수정 제안이 원본을 망쳐버림 | "수정 PR"을 별도 생성, 원본 미변경 |
 | 봇의 universal 기준이 내 제품 의도와 맞지 않음 | 자체 기준 없음, per-repo PRD/SEED 기반만 |
 
+## 공개 배포 포지션
+
+`pr-guard-bot`은 public repository로 유지하되, 아직 대외 홍보 전인 dogfood-stage 개발자 도구다. 공개 상태의 목적은 다른 Hermes/DS 리포가 특정 commit SHA 또는 release tag로 안전하게 pin해서 쓰기 쉽게 만드는 것이다.
+
+공개 repo로 운영하는 동안 기본 workflow는 fork PR에서 secrets/write side effect를 쓰지 않고 artifact-only로 동작해야 하며, 자동 fix PR 생성은 trusted same-repository PR에서만 명시적 opt-in으로 허용한다.
+
 ## 비-목표 (이 봇이 의도적으로 하지 않는 것)
 
 - 코딩 중 실시간 알림 / 인터럽트

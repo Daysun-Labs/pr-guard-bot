@@ -129,3 +129,112 @@ def test_no_publish_pass_report_returns_zero_with_fail_on_drift(
 
     assert rc == 0
     assert json.loads(output.read_text(encoding="utf-8"))["verdict"] == "pass"
+
+
+def test_publish_best_effort_keeps_report_when_comment_publish_fails(
+    tmp_path: Path, monkeypatch: Any, capsys: Any
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "dummy-token")
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("HERMES_PR_GUARD_WEBHOOK_URL", raising=False)
+    monkeypatch.setattr(main_mod, "detect_spec_files", lambda repo_root: {"prd": True, "seed": True})
+    monkeypatch.setattr(
+        main_mod,
+        "parse_repo",
+        lambda repo_root: SpecBundle(
+            prd_path="PRD.md",
+            seed_path="SEED.md",
+            seed_yaml_path=None,
+            requirements=[],
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_git_diff", lambda base_ref, head_ref, repo_root: "")
+    monkeypatch.setattr(main_mod, "detect_drift", lambda spec_bundle, diff: [])
+    monkeypatch.setattr(
+        main_mod,
+        "filter_actionable_drift",
+        lambda raw: ([], {"unrelated": 0, "non_goal": 0}),
+    )
+    monkeypatch.setattr(main_mod, "create_github_client", lambda token: object())
+
+    def fail_publish(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("Resource not accessible by integration")
+
+    monkeypatch.setattr(main_mod, "publish_pr_comment", fail_publish)
+    output = tmp_path / "pr-guard-report.json"
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+            "--json-output",
+            str(output),
+            "--publish-best-effort",
+            "--fail-on-drift",
+        ]
+    )
+
+    assert rc == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["verdict"] == "pass"
+    assert "--publish-best-effort" in capsys.readouterr().err
+
+
+def test_max_fix_prs_zero_explains_fix_generation_is_disabled(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "dummy-token")
+    monkeypatch.setenv("PR_GUARD_MAX_FIX_PRS", "0")
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.setattr(main_mod, "detect_spec_files", lambda repo_root: {"prd": True, "seed": True})
+    monkeypatch.setattr(
+        main_mod,
+        "parse_repo",
+        lambda repo_root: SpecBundle(
+            prd_path="PRD.md",
+            seed_path="SEED.md",
+            seed_yaml_path=None,
+            requirements=[],
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_git_diff", lambda base_ref, head_ref, repo_root: "")
+    monkeypatch.setattr(main_mod, "detect_drift", lambda spec_bundle, diff: [_drift()])
+    monkeypatch.setattr(
+        main_mod,
+        "filter_actionable_drift",
+        lambda raw: ([_drift()], {"unrelated": 0, "non_goal": 0}),
+    )
+    monkeypatch.setattr(main_mod, "create_github_client", lambda token: object())
+    monkeypatch.setattr(main_mod, "resolve_llm_provider", lambda env: object())
+    published: dict[str, str] = {}
+
+    def record_publish(*args: Any, **kwargs: Any) -> None:
+        published["body"] = kwargs["body"]
+
+    monkeypatch.setattr(main_mod, "publish_pr_comment", record_publish)
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+        ]
+    )
+
+    assert rc == 0
+    assert "PR_GUARD_MAX_FIX_PRS=0" in published["body"]
