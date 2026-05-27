@@ -40,7 +40,7 @@
 
 - Update workflow to use `pr-guard --json-output pr-guard-report.json --fail-on-drift`.
 - Document required secrets/env:
-  - `SLACK_WEBHOOK_URL` points to Slack channel C0B6XNQCYFJ in current DS setup.
+  - `SLACK_WEBHOOK_URL` optional; route it to the notification channel you want for drift reports.
   - `HERMES_PR_GUARD_WEBHOOK_URL` optional, preferred over Anthropic API key.
   - `HERMES_PR_GUARD_WEBHOOK_TOKEN` optional, protects the Hermes endpoint.
 - Document branch-protection setup: make workflow job `PR Guard` a required status check.
