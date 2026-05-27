@@ -32,7 +32,7 @@ class _MockClient:
 def test_send_success_200() -> None:
     client = _MockClient(response=_MockResponse(200, "ok"))
     status = send_slack_webhook(
-        "https://hooks.slack.com/services/AAA/BBB/CCC",
+        "https://example.invalid/slack-webhook/AAA/BBB/CCC",
         {"text": "hi"},
         client=client,
     )

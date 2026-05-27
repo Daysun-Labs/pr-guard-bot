@@ -39,6 +39,8 @@ Classify actionable drift / missing implementation / spec mismatch
 ```text
 pr-guard-bot/
 ├── README.md
+├── SECURITY.md
+├── CONTRIBUTING.md
 ├── PRD.md
 ├── SEED.md
 ├── SEED.yaml
@@ -74,6 +76,16 @@ pr-guard-bot/
 
 4. Enable branch protection and require the workflow job named **`PR Guard`** before merging.
 
+### Public repository safety defaults
+
+The bundled workflow is safe to keep public:
+
+- public fork PRs run with `--no-publish`, so they still produce `pr-guard-report.json` but do not receive secrets and do not publish comments, Slack messages, onboarding PRs, or fix PRs;
+- same-repository PRs use `--publish-best-effort`, so a restrictive `GITHUB_TOKEN` permission setting cannot hide the JSON artifact/check result behind a comment-publishing failure;
+- automatic fix-PR branch creation is disabled by default with `PR_GUARD_MAX_FIX_PRS=0`.
+
+To opt into auto-generated fix PRs for trusted same-repository PRs, set repository variable `PR_GUARD_MAX_FIX_PRS` to a positive number and raise the workflow permission `contents` from `read` to `write`. Do not enable that mode for untrusted forks.
+
 ## CI gate mode
 
 The core CLI can be run in GitHub Actions or locally:
@@ -93,6 +105,7 @@ Important flags:
 - `--json-output`: writes a report with `schema_version`, `verdict`, `drifts`, `fix_prs`, and `suppressed`.
 - `--fail-on-drift`: exits non-zero when the verdict is not `pass`, making the job usable as a required status check.
 - `--no-publish`: dry-run mode; skips GitHub comments, Slack, onboarding PRs, and fix PR creation.
+- `--publish-best-effort`: writes the JSON report and keeps the check verdict authoritative even when PR comment publishing is blocked by repository permissions.
 
 PR comments use the marker `<!-- pr-guard:drift-report -->`, so repeated pushes update the existing report instead of creating comment noise.
 
@@ -144,6 +157,10 @@ python -m pr_guard \
 - Do not commit live webhook URLs, tokens, API keys, or generated logs containing credentials.
 - Prefer Hermes webhook/OAuth integration over direct long-lived model-provider keys.
 - Treat GitHub Actions logs and artifacts as public once the repository is public.
+- Keep fork PRs in `--no-publish` mode: no secrets, no comments, no Slack, no onboarding PRs, and no fix PR branches.
+- Keep automatic fix PRs opt-in for trusted same-repository PRs only.
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting and maintainer response policy.
 
 ## License
 

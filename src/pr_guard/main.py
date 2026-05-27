@@ -273,6 +273,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Dry-run gate mode: skip GitHub/Slack/onboarding/fix-PR side effects",
     )
     parser.add_argument(
+        "--publish-best-effort",
+        action="store_true",
+        help="Continue after PR comment publishing fails; keep JSON artifact/check verdict authoritative",
+    )
+    parser.add_argument(
         "--fail-on-drift",
         action="store_true",
         help="Return nonzero when the structured report verdict is not pass",
@@ -382,6 +387,11 @@ def main(argv: list[str] | None = None) -> int:
         footer_parts.append(
             f"\n**Auto-generated fix PRs** ({len(fix_prs)}):\n{fix_list}"
         )
+    elif actionable and max_fixes <= 0:
+        footer_parts.append(
+            "\n_(auto fix-PR generation disabled by `PR_GUARD_MAX_FIX_PRS=0`; "
+            "JSON report/comment only)_"
+        )
     elif provider is not None and actionable:
         footer_parts.append(
             "\n_(no fix PRs created — LLM provider declined or generation hit an error; "
@@ -406,14 +416,23 @@ def main(argv: list[str] | None = None) -> int:
 
     comment_body = format_drift_comment(actionable) + footer
     if not args.no_publish and http is not None:
-        publish_pr_comment(
-            http,
-            owner=owner,
-            repo=repo_name,
-            pr_number=args.pr_number,
-            body=comment_body,
-            marker=PR_COMMENT_MARKER,
-        )
+        try:
+            publish_pr_comment(
+                http,
+                owner=owner,
+                repo=repo_name,
+                pr_number=args.pr_number,
+                body=comment_body,
+                marker=PR_COMMENT_MARKER,
+            )
+        except Exception as e:
+            if not args.publish_best_effort:
+                raise
+            print(
+                "WARN: PR comment publish failed; continuing because "
+                f"--publish-best-effort is set: {e}",
+                file=sys.stderr,
+            )
     print(
         f"[drift] raw={len(raw_drifts)} actionable={len(actionable)} "
         f"fix_prs={len(fix_prs)} "

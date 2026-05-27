@@ -10,7 +10,8 @@
 #   HERMES_PR_GUARD_WEBHOOK_TOKEN — 선택/권장: Hermes webhook Bearer token
 #   ANTHROPIC_API_KEY             — 선택: Hermes webhook이 없을 때만 쓰는 legacy fallback
 #   SLACK_WEBHOOK_URL             — Slack incoming webhook URL
-# GITHUB_TOKEN은 자동 주입됨 (write 권한 명시 필요)
+# GITHUB_TOKEN은 자동 주입됨. public fork PR에서는 secrets/write 권한이 없으므로
+# --no-publish artifact-only mode로 실행한다.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 name: pr-guard
@@ -21,7 +22,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
   issues: write
 
@@ -29,6 +30,12 @@ permissions:
 concurrency:
   group: pr-guard-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
+
+env:
+  # Public-safe default: never let an LLM provider create fix PR branches unless
+  # the repo owner explicitly opts in by setting this repository variable > 0.
+  # If you enable fix PRs, also raise `permissions.contents` to `write`.
+  PR_GUARD_MAX_FIX_PRS: ${{ vars.PR_GUARD_MAX_FIX_PRS || '0' }}
 
 jobs:
   guard:
@@ -76,17 +83,25 @@ jobs:
           HERMES_PR_GUARD_WEBHOOK_URL: ${{ secrets.HERMES_PR_GUARD_WEBHOOK_URL }}
           HERMES_PR_GUARD_WEBHOOK_TOKEN: ${{ secrets.HERMES_PR_GUARD_WEBHOOK_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          IS_FORK_PR: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
+          extra_args=(--publish-best-effort)
+          if [[ "$IS_FORK_PR" == "true" ]]; then
+            echo "::notice title=pr-guard::Fork PR detected; running artifact-only --no-publish mode."
+            extra_args+=(--no-publish)
+          fi
+
           python -m pr_guard \
             --repo "$REPO" \
             --pr-number "$PR_NUMBER" \
             --base-ref "$BASE_REF" \
             --head-ref "$HEAD_REF" \
             --json-output pr-guard-report.json \
+            "${extra_args[@]}" \
             --fail-on-drift
 
       - name: Upload PR Guard report
