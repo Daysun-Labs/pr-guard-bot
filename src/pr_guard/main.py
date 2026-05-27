@@ -92,6 +92,17 @@ class _Repos:
         self, *, owner: str, repo: str, path: str, **payload: Any
     ) -> dict:
         body = {k: v for k, v in payload.items() if v is not None}
+        if "sha" not in body:
+            existing = self._http.get(
+                f"/repos/{owner}/{repo}/contents/{path}",
+                params={"ref": body.get("branch")},
+            )
+            if existing.status_code == 200:
+                existing_payload = existing.json()
+                if isinstance(existing_payload, dict) and existing_payload.get("sha"):
+                    body["sha"] = existing_payload["sha"]
+            elif existing.status_code != 404:
+                existing.raise_for_status()
         r = self._http.put(f"/repos/{owner}/{repo}/contents/{path}", json=body)
         r.raise_for_status()
         return r.json()
