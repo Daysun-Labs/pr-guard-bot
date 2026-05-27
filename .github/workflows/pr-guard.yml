@@ -6,8 +6,10 @@
 # PR diff와 대조하여 코멘트·Slack 알림·수정 PR을 생성한다.
 #
 # 필요한 secrets:
-#   ANTHROPIC_API_KEY    — LLM 분석용 (Claude)
-#   SLACK_WEBHOOK_URL    — Slack incoming webhook URL
+#   HERMES_PR_GUARD_WEBHOOK_URL   — 선택/권장: Hermes webhook/API endpoint (LLM/OAuth는 Hermes가 담당)
+#   HERMES_PR_GUARD_WEBHOOK_TOKEN — 선택/권장: Hermes webhook Bearer token
+#   ANTHROPIC_API_KEY             — 선택: Hermes webhook이 없을 때만 쓰는 legacy fallback
+#   SLACK_WEBHOOK_URL             — Slack incoming webhook URL
 # GITHUB_TOKEN은 자동 주입됨 (write 권한 명시 필요)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -45,7 +47,16 @@ jobs:
       - name: Checkout PR
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # diff 계산을 위해 full history
+          # Avoid fetching every branch/tag; some repos/org policies reject that ref listing.
+          # The guard only needs the checked-out PR ref plus the base ref fetched below.
+          fetch-depth: 2
+
+      - name: Fetch base ref for PR diff
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -54,14 +65,16 @@ jobs:
 
       - name: Install pr-guard
         run: |
-          # 봇 본체와 테스트 의존성 모두 설치
-          pip install -e ".[dev]"
+          # 봇 본체, 테스트 의존성, legacy Anthropic fallback extra 설치
+          pip install -e ".[dev,anthropic]"
 
       - name: Run PR Guard
         if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          HERMES_PR_GUARD_WEBHOOK_URL: ${{ secrets.HERMES_PR_GUARD_WEBHOOK_URL }}
+          HERMES_PR_GUARD_WEBHOOK_TOKEN: ${{ secrets.HERMES_PR_GUARD_WEBHOOK_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -72,7 +85,17 @@ jobs:
             --repo "$REPO" \
             --pr-number "$PR_NUMBER" \
             --base-ref "$BASE_REF" \
-            --head-ref "$HEAD_REF"
+            --head-ref "$HEAD_REF" \
+            --json-output pr-guard-report.json \
+            --fail-on-drift
+
+      - name: Upload PR Guard report
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-guard-report
+          path: pr-guard-report.json
+          if-no-files-found: ignore
 
       - name: Smoke test (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'

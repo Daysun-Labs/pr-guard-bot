@@ -98,8 +98,12 @@ def match_requirements(
     satisfied: list[MatchResult] = []
     unmet: list[MatchResult] = []
 
+    changed_text = "\n".join(f.changed_text for f in diff.files)
+
     for req in requirements:
-        result = _match_one(req, file_paths, file_path_set, symbols, symbol_set, threshold)
+        result = _match_one(
+            req, file_paths, file_path_set, symbols, symbol_set, changed_text, threshold
+        )
         if result.satisfied:
             satisfied.append(result)
         else:
@@ -119,6 +123,7 @@ def _match_one(
     file_path_set: set[str],
     symbols: list[str],
     symbol_set: set[str],
+    changed_text: str,
     threshold: float,
 ) -> MatchResult:
     text = req.text
@@ -150,7 +155,7 @@ def _match_one(
     # 3) Token-coverage score across remaining content tokens.
     tokens = _content_tokens(text)
     matched_tokens: list[str] = []
-    haystack = " ".join(file_paths + symbols).lower()
+    haystack = " ".join(file_paths + symbols + [changed_text]).lower()
     for tok in tokens:
         if tok in haystack:
             matched_tokens.append(tok)

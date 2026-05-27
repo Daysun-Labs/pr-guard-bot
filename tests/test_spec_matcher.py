@@ -58,6 +58,30 @@ def test_satisfied_via_symbol_name():
     assert "MatchReport" in ev.matched_symbols
 
 
+def test_satisfied_via_changed_text_tokens():
+    diff = parse_unified_diff(
+        """\
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1,2 +1,3 @@
++Slack incoming webhook notification is sent within five minutes.
+"""
+    )
+    req = _req("Send Slack incoming webhook notification within five minutes")
+    report = match_requirements([req], diff)
+    assert len(report.satisfied) == 1
+    assert set(report.satisfied[0].evidence.matched_tokens) >= {
+        "slack",
+        "incoming",
+        "webhook",
+        "notification",
+        "within",
+        "five",
+        "minutes",
+    }
+
+
 def test_unmet_when_diff_unrelated():
     diff = parse_unified_diff(SAMPLE_DIFF)
     req = _req("Slack webhook must include retry with exponential backoff")

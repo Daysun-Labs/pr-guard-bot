@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from pr_guard import main as main_mod
+from pr_guard.drift import DriftItem
+from pr_guard.spec_parser import SpecBundle
+
+
+def _drift() -> DriftItem:
+    return DriftItem(
+        type="missing_requirement",
+        severity="high",
+        source="prd",
+        source_file="PRD.md",
+        section="Acceptance",
+        kind="acceptance",
+        quote="implement required webhook flow",
+        line=20,
+        score=0.5,
+    )
+
+
+def _install_common_stubs(monkeypatch: Any, actionable: list[DriftItem]) -> dict[str, int]:
+    calls = {"github": 0, "publish": 0, "slack": 0, "fix_prs": 0}
+    suppressed = {"unrelated": 1, "non_goal": 0}
+
+    monkeypatch.setattr(main_mod, "detect_spec_files", lambda repo_root: {"prd": True, "seed": True})
+    monkeypatch.setattr(
+        main_mod,
+        "parse_repo",
+        lambda repo_root: SpecBundle(
+            prd_path="PRD.md",
+            seed_path="SEED.md",
+            seed_yaml_path=None,
+            requirements=[],
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_git_diff", lambda base_ref, head_ref, repo_root: "")
+    monkeypatch.setattr(main_mod, "detect_drift", lambda spec_bundle, diff: actionable)
+    monkeypatch.setattr(main_mod, "filter_actionable_drift", lambda raw: (actionable, suppressed))
+
+    def fail_github(*args: Any, **kwargs: Any) -> None:
+        calls["github"] += 1
+        raise AssertionError("GitHub client should not be created in --no-publish mode")
+
+    def record_publish(*args: Any, **kwargs: Any) -> None:
+        calls["publish"] += 1
+        raise AssertionError("PR comment should not be published in --no-publish mode")
+
+    def record_slack(*args: Any, **kwargs: Any) -> None:
+        calls["slack"] += 1
+        raise AssertionError("Slack should not be called in --no-publish mode")
+
+    def record_fix_prs(*args: Any, **kwargs: Any) -> list[tuple[DriftItem, int]]:
+        calls["fix_prs"] += 1
+        raise AssertionError("Fix PRs should not be created in --no-publish mode")
+
+    monkeypatch.setattr(main_mod, "create_github_client", fail_github)
+    monkeypatch.setattr(main_mod, "publish_pr_comment", record_publish)
+    monkeypatch.setattr(main_mod, "send_slack_webhook", record_slack)
+    monkeypatch.setattr(main_mod, "_maybe_generate_fix_prs", record_fix_prs)
+    return calls
+
+
+def test_no_publish_writes_report_without_github_token_and_fails_on_drift(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://slack.example/hook")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    calls = _install_common_stubs(monkeypatch, [_drift()])
+    output = tmp_path / "pr-guard-report.json"
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+            "--json-output",
+            str(output),
+            "--no-publish",
+            "--fail-on-drift",
+        ]
+    )
+
+    assert rc == 1
+    assert calls == {"github": 0, "publish": 0, "slack": 0, "fix_prs": 0}
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["verdict"] == "fail"
+    assert report["drift_count"] == 1
+    assert report["suppressed"] == {"unrelated": 1, "non_goal": 0}
+
+
+def test_no_publish_pass_report_returns_zero_with_fail_on_drift(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    _install_common_stubs(monkeypatch, [])
+    output = tmp_path / "pr-guard-report.json"
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+            "--json-output",
+            str(output),
+            "--no-publish",
+            "--fail-on-drift",
+        ]
+    )
+
+    assert rc == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["verdict"] == "pass"

@@ -33,6 +33,7 @@ class FileDiff:
     removed_lines: int
     symbols: list[str] = field(default_factory=list)
     hunks: list[dict[str, Any]] = field(default_factory=list)
+    changed_text: str = ""
 
 
 @dataclass
@@ -74,6 +75,7 @@ def parse_unified_diff(diff_text: str) -> NormalizedDiff:
     current: FileDiff | None = None
     current_hunk: dict[str, Any] | None = None
     symbol_set: set[str] = set()
+    changed_lines: list[str] = []
 
     lines = diff_text.splitlines()
     i = 0
@@ -84,8 +86,10 @@ def parse_unified_diff(diff_text: str) -> NormalizedDiff:
             # finalize previous
             if current is not None:
                 current.symbols = sorted(symbol_set)
+                current.changed_text = "\n".join(changed_lines)
                 files.append(current)
             symbol_set = set()
+            changed_lines = []
             current_hunk = None
             a_path, b_path = m.group(1), m.group(2)
             current = FileDiff(
@@ -131,6 +135,7 @@ def parse_unified_diff(diff_text: str) -> NormalizedDiff:
             continue
 
         if line.startswith("+") and not line.startswith("+++"):
+            changed_lines.append(line[1:])
             current.added_lines += 1
             if current_hunk is not None:
                 current_hunk["added"] += 1
@@ -138,6 +143,7 @@ def parse_unified_diff(diff_text: str) -> NormalizedDiff:
             if sym:
                 symbol_set.add(sym)
         elif line.startswith("-") and not line.startswith("---"):
+            changed_lines.append(line[1:])
             current.removed_lines += 1
             if current_hunk is not None:
                 current_hunk["removed"] += 1
@@ -148,6 +154,7 @@ def parse_unified_diff(diff_text: str) -> NormalizedDiff:
 
     if current is not None:
         current.symbols = sorted(symbol_set)
+        current.changed_text = "\n".join(changed_lines)
         files.append(current)
 
     return NormalizedDiff(files=files)
