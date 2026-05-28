@@ -74,6 +74,31 @@ def test_report_fails_when_actionable_drift_remains_without_fix_prs() -> None:
     assert "2 actionable drift" in report["summary"]
 
 
+def test_report_preserves_fix_pr_status_and_skip_reason() -> None:
+    drift = _drift(source="seed", quote="document OAuth setup")
+
+    report = build_guard_report(
+        repo="octo/app",
+        pr_number=12,
+        actionable_drifts=[drift],
+        fix_prs=[
+            {
+                "drift": drift,
+                "status": "skipped",
+                "branch": "pr-guard/seed-fix/seed-document-oauth-1234",
+                "pr_number": None,
+                "reason": "could not create a unique branch after 2 attempt(s)",
+            }
+        ],
+        suppressed={"unrelated": 0, "non_goal": 0},
+    )
+
+    assert report["verdict"] == "fail"
+    assert report["fix_pr_count"] == 0
+    assert report["fix_prs"][0]["status"] == "skipped"
+    assert "unique branch" in report["fix_prs"][0]["reason"]
+
+
 def test_write_guard_report_creates_json_file(tmp_path) -> None:
     path = tmp_path / "nested" / "pr-guard-report.json"
     report = build_guard_report(

@@ -238,3 +238,71 @@ def test_max_fix_prs_zero_explains_fix_generation_is_disabled(
 
     assert rc == 0
     assert "PR_GUARD_MAX_FIX_PRS=0" in published["body"]
+
+
+def test_fix_pr_footer_includes_idempotent_status_reason(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    drift = _drift()
+    monkeypatch.setenv("GITHUB_TOKEN", "dummy-token")
+    monkeypatch.setenv("PR_GUARD_MAX_FIX_PRS", "1")
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.setattr(main_mod, "detect_spec_files", lambda repo_root: {"prd": True, "seed": True})
+    monkeypatch.setattr(
+        main_mod,
+        "parse_repo",
+        lambda repo_root: SpecBundle(
+            prd_path="PRD.md",
+            seed_path="SEED.md",
+            seed_yaml_path=None,
+            requirements=[],
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_git_diff", lambda base_ref, head_ref, repo_root: "")
+    monkeypatch.setattr(main_mod, "detect_drift", lambda spec_bundle, diff: [drift])
+    monkeypatch.setattr(
+        main_mod,
+        "filter_actionable_drift",
+        lambda raw: ([drift], {"unrelated": 0, "non_goal": 0}),
+    )
+    monkeypatch.setattr(main_mod, "create_github_client", lambda token: object())
+    monkeypatch.setattr(main_mod, "resolve_llm_provider", lambda env, **kwargs: object())
+    monkeypatch.setattr(main_mod, "_git_rev_parse", lambda ref, repo_root: "base-sha")
+    monkeypatch.setattr(
+        main_mod,
+        "_maybe_generate_fix_prs",
+        lambda **kwargs: [
+            {
+                "drift": drift,
+                "status": "reused",
+                "branch": "pr-guard/code-fix/prd-webhook-flow-1234abcd",
+                "pr_number": 99,
+                "reason": "existing open PR #99 already uses branch; reused instead",
+            }
+        ],
+    )
+    published: dict[str, str] = {}
+
+    def record_publish(*args: Any, **kwargs: Any) -> None:
+        published["body"] = kwargs["body"]
+
+    monkeypatch.setattr(main_mod, "publish_pr_comment", record_publish)
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+        ]
+    )
+
+    assert rc == 0
+    assert "reused" in published["body"]
+    assert "existing open PR #99" in published["body"]

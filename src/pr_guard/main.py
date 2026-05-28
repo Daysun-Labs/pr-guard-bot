@@ -25,7 +25,7 @@ from .comment_format import format_drift_comment
 from .detector import detect_spec_files
 from .diff_extractor import parse_unified_diff
 from .drift import DriftItem, detect_drift, filter_actionable_drift
-from .fix_pr import create_fix_pr
+from .fix_pr import create_or_reuse_fix_pr
 from .github_client import create_github_client
 from .guard_report import build_guard_report, write_guard_report
 from .llm_provider import LLMProvider, resolve_llm_provider
@@ -67,7 +67,9 @@ class _Pulls:
         return r.json()
 
     def list(self, *, owner: str, repo: str, state: str = "open") -> list:
-        r = self._http.get(f"/repos/{owner}/{repo}/pulls", params={"state": state})
+        r = self._http.get(
+            f"/repos/{owner}/{repo}/pulls", params={"state": state, "per_page": 100}
+        )
         r.raise_for_status()
         return r.json()
 
@@ -184,12 +186,12 @@ def _maybe_generate_fix_prs(
     base_sha: str,
     provider: LLMProvider,
     max_fixes: int,
-) -> list[tuple[DriftItem, int]]:
+) -> list[dict[str, Any]]:
     """Generate up to ``max_fixes`` fix-PRs from actionable drifts.
 
-    Returns a list of ``(drift, new_pr_number)``. Failures are logged to
-    stderr and skipped — never raised, so a flaky fix-PR step can't
-    break the primary drift-comment flow.
+    Returns fix-PR result dicts with status/branch/reason. Failures are logged
+    to stderr and skipped — never raised, so a flaky fix-PR step can't break
+    the primary drift-comment flow.
     """
     seed_md = repo_root / "SEED.md"
     seed_md_text = seed_md.read_text(encoding="utf-8") if seed_md.exists() else ""
@@ -197,7 +199,7 @@ def _maybe_generate_fix_prs(
     # 코드 패치 컨텍스트는 가벼운 repo overview만 (Claude가 디렉토리 구조로 추론)
     repo_context = _repo_overview(repo_root)
 
-    created: list[tuple[DriftItem, int]] = []
+    created: list[dict[str, Any]] = []
     for drift in actionable[:max_fixes]:
         try:
             if drift.source == "seed":
@@ -214,7 +216,7 @@ def _maybe_generate_fix_prs(
                     file=sys.stderr,
                 )
                 continue
-            branch, pr_num = create_fix_pr(
+            result = create_or_reuse_fix_pr(
                 octokit,
                 owner=owner,
                 repo=repo_name,
@@ -225,8 +227,15 @@ def _maybe_generate_fix_prs(
                 default_branch=base_ref,
                 source_pr_number=source_pr_number,
             )
-            print(f"[fix-pr] #{pr_num} ({branch})")
-            created.append((drift, pr_num))
+            pr_num = result.get("pr_number")
+            branch = result.get("branch")
+            status = result.get("status")
+            reason = result.get("reason")
+            if pr_num is None:
+                print(f"[fix-pr] {status} ({branch}): {reason}", file=sys.stderr)
+            else:
+                print(f"[fix-pr] {status} #{pr_num} ({branch}): {reason}")
+            created.append(result)
         except Exception as e:
             print(f"WARN: fix-PR 생성 실패 ({drift.quote[:30]!r}): {e}", file=sys.stderr)
     return created
@@ -247,6 +256,55 @@ def _repo_overview(repo_root: Path, *, max_files: int = 80) -> str:
             paths.append(f"... ({len(paths)}+ files truncated)")
             break
     return "\n".join(paths)
+
+
+def _format_fix_pr_result(item: tuple[DriftItem, int] | dict[str, Any]) -> str:
+    if isinstance(item, dict):
+        drift = item.get("drift")
+        pr_number = item.get("pr_number")
+        status = item.get("status", "created")
+        branch = item.get("branch")
+        reason = item.get("reason")
+    else:
+        drift, pr_number = item
+        status = "created"
+        branch = None
+        reason = None
+
+    if isinstance(drift, DriftItem):
+        source = drift.source
+        source_file = drift.source_file
+        line_no = drift.line
+    elif isinstance(drift, dict):
+        source = str(drift.get("source", "spec"))
+        source_file = str(drift.get("source_file", "unknown"))
+        line_no = drift.get("line", "?")
+    else:
+        source = "spec"
+        source_file = "unknown"
+        line_no = "?"
+
+    kind = "code-fix" if source == "prd" else "seed-fix"
+    pr_label = f"#{pr_number}" if pr_number is not None else "no PR"
+    parts = [
+        f"- {pr_label} — `{source.upper()}:{source_file}:{line_no}` ({kind}; {status})"
+    ]
+    if branch:
+        parts.append(f"branch `{branch}`")
+    if reason:
+        parts.append(str(reason))
+    return " — ".join(parts)
+
+
+def _fix_pr_ready_count(fix_prs: list[tuple[DriftItem, int] | dict[str, Any]]) -> int:
+    count = 0
+    for item in fix_prs:
+        if isinstance(item, dict):
+            if item.get("pr_number") is not None:
+                count += 1
+        else:
+            count += 1
+    return count
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -368,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
         else resolve_llm_provider(os.environ, metadata=provider_metadata)
     )
     max_fixes = int(os.environ.get("PR_GUARD_MAX_FIX_PRS", str(MAX_FIX_PRS_DEFAULT)))
-    fix_prs: list[tuple[DriftItem, int]] = []
+    fix_prs: list[Any] = []
     if provider is not None and actionable and max_fixes > 0 and octokit is not None:
         base_sha = _git_rev_parse(f"origin/{args.base_ref}", repo_root=args.repo_root)
         fix_prs = _maybe_generate_fix_prs(
@@ -390,13 +448,12 @@ def main(argv: list[str] | None = None) -> int:
         f"{suppressed['non_goal']} non-goal items (L1 noise reduction).",
     ]
     if fix_prs:
-        fix_list = "\n".join(
-            f"- #{n} — `{d.source.upper()}:{d.source_file}:{d.line}` "
-            f"({'code-fix' if d.source == 'prd' else 'seed-fix'})"
-            for d, n in fix_prs
-        )
+        fix_list = "\n".join(_format_fix_pr_result(item) for item in fix_prs)
+        ready_count = _fix_pr_ready_count(fix_prs)
+        skipped_count = len(fix_prs) - ready_count
         footer_parts.append(
-            f"\n**Auto-generated fix PRs** ({len(fix_prs)}):\n{fix_list}"
+            "\n**Auto-generated fix PR handling** "
+            f"({ready_count} ready/reused, {skipped_count} skipped):\n{fix_list}"
         )
     elif actionable and max_fixes <= 0:
         footer_parts.append(

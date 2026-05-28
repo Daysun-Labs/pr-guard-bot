@@ -31,7 +31,7 @@ def build_guard_report(
     drift_items = list(actionable_drifts)
     fix_items = [_normalize_fix_pr(item) for item in fix_prs]
     drift_count = len(drift_items)
-    fix_pr_count = len(fix_items)
+    fix_pr_count = sum(1 for item in fix_items if item.get("pr_number") is not None)
     verdict = determine_verdict(drift_count=drift_count, fix_pr_count=fix_pr_count)
 
     return {
@@ -71,7 +71,11 @@ def _normalize_fix_pr(item: tuple[DriftItem, int] | dict[str, Any]) -> dict[str,
         drift = item.get("drift")
         if isinstance(drift, DriftItem):
             drift = drift.to_dict()
-        return {"pr_number": pr_number, "drift": drift}
+        normalized = {"pr_number": pr_number, "drift": drift}
+        for key in ("status", "branch", "reason"):
+            if key in item:
+                normalized[key] = item[key]
+        return normalized
 
     drift, pr_number = item
     return {"pr_number": pr_number, "drift": drift.to_dict()}
