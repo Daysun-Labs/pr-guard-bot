@@ -31,7 +31,7 @@ def build_guard_report(
     drift_items = list(actionable_drifts)
     fix_items = [_normalize_fix_pr(item) for item in fix_prs]
     drift_count = len(drift_items)
-    fix_pr_count = len(fix_items)
+    fix_pr_count = sum(1 for item in fix_items if item.get("pr_number") is not None)
     verdict = determine_verdict(drift_count=drift_count, fix_pr_count=fix_pr_count)
 
     return {
@@ -71,7 +71,11 @@ def _normalize_fix_pr(item: tuple[DriftItem, int] | dict[str, Any]) -> dict[str,
         drift = item.get("drift")
         if isinstance(drift, DriftItem):
             drift = drift.to_dict()
-        return {"pr_number": pr_number, "drift": drift}
+        normalized = {"pr_number": pr_number, "drift": drift}
+        for key in ("status", "branch", "reason"):
+            if key in item:
+                normalized[key] = item[key]
+        return normalized
 
     drift, pr_number = item
     return {"pr_number": pr_number, "drift": drift.to_dict()}
@@ -90,5 +94,5 @@ def _summary(verdict: str, *, drift_count: int, fix_pr_count: int) -> str:
         return "No actionable drift detected."
     if verdict == NEEDS_FIX_REVIEW:
         noun = "fix PR" if fix_pr_count == 1 else "fix PRs"
-        return f"{drift_count} actionable drift item(s) detected; {fix_pr_count} {noun} created for review."
+        return f"{drift_count} actionable drift item(s) detected; {fix_pr_count} {noun} ready/reused for review."
     return f"{drift_count} actionable drift item(s) detected; no fix PRs were created."
