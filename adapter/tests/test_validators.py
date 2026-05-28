@@ -83,7 +83,7 @@ def test_code_fix_rejects_direct_source_patch_paths() -> None:
     assert "docs/pr-guard-proposals" in result["reason"]
 
 
-def test_update_rejects_multiline_commit_message() -> None:
+def test_update_flattens_multiline_commit_message() -> None:
     request = ProposalRequest.model_validate(
         {
             "task": "code_fix",
@@ -111,5 +111,5 @@ def test_update_rejects_multiline_commit_message() -> None:
         request=request,
     )
 
-    assert result["action"] == "skip"
-    assert "one line" in result["reason"]
+    assert result["action"] == "update"
+    assert result["message"] == "docs: add OAuth Body not allowed"

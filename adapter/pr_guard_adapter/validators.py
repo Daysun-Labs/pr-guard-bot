@@ -28,6 +28,15 @@ def _clean_reason(reason: str) -> str:
     return reason[:240] or "Skipped by PR Guard adapter."
 
 
+def _clean_message(message: str) -> str:
+    """Normalize harmless model formatting drift for one-line PR titles."""
+
+    cleaned = " ".join(str(message).split())
+    if len(cleaned) > 120:
+        cleaned = cleaned[:119].rstrip() + "…"
+    return cleaned
+
+
 def parse_model_proposal(content: str) -> JsonObject:
     """Parse Hermes' final assistant message as proposal JSON.
 
@@ -67,11 +76,11 @@ def validate_proposal(proposal: JsonObject, *, request: ProposalRequest) -> Json
             return skip(f"Malformed Hermes proposal: update requires non-empty {field}.")
 
     new_content = proposal["new_content"].strip()
-    message = proposal["message"].strip()
+    message = _clean_message(proposal["message"])
     rationale = proposal["rationale"].strip()
 
-    if "\n" in message or "\r" in message:
-        return skip("Malformed Hermes proposal: message must be one line.")
+    if not message:
+        return skip("Malformed Hermes proposal: update requires non-empty message.")
     if len(message) > 120:
         return skip("Malformed Hermes proposal: message must be <= 120 characters.")
     if len(rationale) > 1000:
