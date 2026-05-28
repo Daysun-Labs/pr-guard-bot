@@ -53,7 +53,7 @@ jobs:
     steps:
       - name: Checkout PR
         # actions/checkout@v4 pinned to an immutable commit for CI supply-chain safety.
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           # Avoid fetching every branch/tag; some repos/org policies reject that ref listing.
           # The guard only needs the checked-out PR ref plus the base ref fetched below.
@@ -68,7 +68,7 @@ jobs:
 
       - name: Setup Python
         # actions/setup-python@v5 pinned to an immutable commit for CI supply-chain safety.
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: '3.12'
 
