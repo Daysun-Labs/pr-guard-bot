@@ -32,6 +32,8 @@ GitHub PR 단위로 검증·교정해주는 personal 봇.
 
 공개 repo로 운영하는 동안 기본 workflow는 fork PR에서 secrets/write side effect를 쓰지 않고 artifact-only로 동작해야 하며, 자동 fix PR 생성은 trusted same-repository PR에서만 명시적 opt-in으로 허용한다.
 
+Public surface에는 guard core, install contract, security posture만 둔다. 실제 DS ingress hostname, Cloudflare Tunnel credential, service/unit details, repo-specific webhook token 값은 private ops runbook이나 target repo secrets에서만 관리한다.
+
 ## 비-목표 (이 봇이 의도적으로 하지 않는 것)
 
 - 코딩 중 실시간 알림 / 인터럽트

@@ -3,14 +3,20 @@
 This runbook describes the DS operating posture for using `pr-guard-bot` as a
 PRD/SEED drift gate in GitHub Actions.
 
-## Current DS ingress
+## Fixed ingress contract
 
-- Public adapter URL: `https://pr-guard.daysunlabs.com/pr-guard/proposal`
-- Adapter origin: `http://127.0.0.1:8788`
-- Hermes API origin behind the adapter: `http://127.0.0.1:8647`
-- Runtime profile: dedicated `ds-pr-guard`; do not point PR payloads at
-  `ds-default` or `ds-eng`.
-- Public health check: `https://pr-guard.daysunlabs.com/healthz`
+This public runbook documents the shape of the PR Guard ingress, not the live DS
+hostname or credentials. Keep the actual hostname, Cloudflare Tunnel credential,
+service unit names, and token values in a private ops runbook or in target-repo
+secrets.
+
+- Adapter URL shape: `https://<guard-host>/pr-guard/proposal`
+- Public health check shape: `https://<guard-host>/healthz`
+- Adapter origin: loopback-only HTTP service such as `http://127.0.0.1:<adapter-port>`
+- Hermes API origin behind the adapter: loopback-only HTTP service such as
+  `http://127.0.0.1:<hermes-api-port>`
+- Runtime profile: dedicated guard profile; do not point PR payloads at
+  general operator profiles such as `ds-default` or `ds-eng`.
 
 Required repository secrets for repos that enable the Hermes proposal provider:
 
@@ -88,6 +94,6 @@ without an explicit DS approval for that specific repository.
 - Required check issue: remove `PR Guard` from the required status-check list.
 - Webhook/provider issue: remove or rotate `HERMES_PR_GUARD_WEBHOOK_URL` and
   `HERMES_PR_GUARD_WEBHOOK_TOKEN` in the target repository.
-- Ingress issue: stop or disable `cloudflared-pr-guard.service`, or remove the
-  `pr-guard.daysunlabs.com` DNS route after approval.
+- Ingress issue: remove or disable the Cloudflare/DNS route, and stop or disable
+  the private adapter/tunnel service after approval.
 - Workflow regression: revert the workflow commit or close the adoption PR.
