@@ -36,7 +36,7 @@ _SEVERITY_BY_KIND = {
 # "tool") rather than evidence that the PR is attempting the requirement. Keep
 # this below the matcher threshold so relevant partial matches can remain
 # actionable instead of being impossible to surface.
-ACTIONABLE_SCORE_FLOOR = 0.25
+ACTIONABLE_SCORE_FLOOR = 0.33
 
 
 @dataclass(frozen=True)

@@ -158,6 +158,6 @@ def test_filter_keeps_relevant_partial_match_violations() -> None:
 
 
 def test_filter_floor_is_inclusive() -> None:
-    actionable, suppressed = filter_actionable_drift([_drift(score=0.25), _drift(score=0.2499)])
-    assert [d.score for d in actionable] == [0.25]
+    actionable, suppressed = filter_actionable_drift([_drift(score=0.33), _drift(score=0.3299)])
+    assert [d.score for d in actionable] == [0.33]
     assert suppressed == {"non_goal": 0, "unrelated": 1}
