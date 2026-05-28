@@ -75,6 +75,78 @@ jobs:
           # 봇 본체, 테스트 의존성, legacy Anthropic fallback extra 설치
           pip install -e ".[dev,anthropic]"
 
+      - name: Hermes adapter live smoke (temporary)
+        if: github.event_name == 'pull_request'
+        env:
+          HERMES_PR_GUARD_WEBHOOK_URL: ${{ secrets.HERMES_PR_GUARD_WEBHOOK_URL }}
+          HERMES_PR_GUARD_WEBHOOK_TOKEN: ${{ secrets.HERMES_PR_GUARD_WEBHOOK_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ -z "${HERMES_PR_GUARD_WEBHOOK_URL:-}" || -z "${HERMES_PR_GUARD_WEBHOOK_TOKEN:-}" ]]; then
+            echo "::notice title=Hermes adapter smoke::Webhook secrets are not configured; skipping live smoke."
+            exit 0
+          fi
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          url = os.environ["HERMES_PR_GUARD_WEBHOOK_URL"].rstrip("/")
+          payload = {
+              "schema_version": "pr-guard.hermes-proposal/v1",
+              "task": "code_fix",
+              "metadata": {
+                  "repo": os.environ["REPO"],
+                  "pr_number": int(os.environ["PR_NUMBER"]),
+                  "base_ref": os.environ["BASE_REF"],
+                  "head_ref": os.environ["HEAD_REF"],
+                  "head_sha": os.environ["HEAD_SHA"],
+              },
+              "drift": {
+                  "type": "missing_requirement",
+                  "severity": "medium",
+                  "source": "prd",
+                  "source_file": "PRD.md",
+                  "section": "Acceptance Criteria",
+                  "kind": "acceptance",
+                  "quote": "The PR must prove Hermes adapter reachability from GitHub-hosted runners.",
+                  "line": 1,
+                  "score": 0.5,
+              },
+              "repo_context": "README.md\n.github/workflows/pr-guard.yml\n",
+              "output_path": "docs/pr-guard-proposals/hermes-live-smoke.md",
+              "proposal_shape": ["action", "new_content", "message", "rationale"],
+          }
+          body = json.dumps(payload).encode("utf-8")
+          request = urllib.request.Request(
+              url,
+              data=body,
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {os.environ['HERMES_PR_GUARD_WEBHOOK_TOKEN']}",
+                  "Content-Type": "application/json",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=75) as response:
+              response_body = response.read().decode("utf-8")
+              status = response.status
+          data = json.loads(response_body)
+          action = data.get("action")
+          if action not in {"update", "skip"}:
+              raise SystemExit(f"Unexpected Hermes adapter action: {action!r}")
+          message = (data.get("message") or data.get("reason") or "")[:220].replace("\n", " ")
+          print(f"Hermes adapter smoke status={status} action={action} message={message}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("## Hermes adapter live smoke\n")
+              fh.write(f"- status: `{status}`\n")
+              fh.write(f"- action: `{action}`\n")
+              fh.write(f"- message: {message}\n")
+          PY
+
       - name: Run PR Guard
         if: github.event_name == 'pull_request'
         env:
