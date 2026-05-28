@@ -45,3 +45,10 @@ Automatic fix PRs require trusted same-repository execution, an explicit positiv
 - Prefer Hermes webhook/OAuth integration over direct long-lived model-provider keys.
 - Treat GitHub Actions logs and artifacts as public when the repository is public.
 - Redact tokens in bug reports, screenshots, test fixtures, and PR comments.
+
+## GitHub Actions supply-chain rules
+
+- Pin workflow actions to immutable commit SHAs rather than mutable tags.
+- Use Dependabot `github-actions` updates to propose reviewed SHA bumps.
+- Treat workflow changes as executable code changes; review permissions, fork behavior,
+  and secret exposure before merging.

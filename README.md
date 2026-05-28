@@ -45,6 +45,7 @@ pr-guard-bot/
 ├── SEED.md
 ├── SEED.yaml
 ├── docs/plans/
+├── docs/operations/
 ├── pyproject.toml
 ├── .github/workflows/pr-guard.yml
 ├── src/pr_guard/
@@ -75,6 +76,8 @@ pr-guard-bot/
    - `SLACK_WEBHOOK_URL` — optional Slack incoming webhook for PR notifications.
 
 4. Enable branch protection and require the workflow job named **`PR Guard`** before merging.
+   For the DS rollout checklist, see
+   [`docs/operations/pr-guard-required-check.md`](docs/operations/pr-guard-required-check.md).
 
 ### Public repository safety defaults
 
@@ -159,6 +162,8 @@ python -m pr_guard \
 - Treat GitHub Actions logs and artifacts as public once the repository is public.
 - Keep fork PRs in `--no-publish` mode: no secrets, no comments, no Slack, no onboarding PRs, and no fix PR branches.
 - Keep automatic fix PRs opt-in for trusted same-repository PRs only.
+- Keep third-party and first-party GitHub Actions pinned to immutable commit SHAs; review
+  Dependabot action-update PRs as executable supply-chain changes.
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting and maintainer response policy.
 
