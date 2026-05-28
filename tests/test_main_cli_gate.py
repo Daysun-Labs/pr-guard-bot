@@ -240,7 +240,7 @@ def test_max_fix_prs_zero_explains_fix_generation_is_disabled(
     assert "PR_GUARD_MAX_FIX_PRS=0" in published["body"]
 
 
-def test_fix_pr_footer_includes_idempotent_status_reason(
+def test_fix_pr_footer_includes_idempotent_status_reason_and_fail_on_drift_still_fails(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     drift = _drift()
@@ -282,12 +282,16 @@ def test_fix_pr_footer_includes_idempotent_status_reason(
         ],
     )
     published: dict[str, str] = {}
+    output = tmp_path / "pr-guard-report.json"
 
     def record_publish(*args: Any, **kwargs: Any) -> None:
         published["body"] = kwargs["body"]
 
     monkeypatch.setattr(main_mod, "publish_pr_comment", record_publish)
 
+    # The idempotent fix-PR path may reuse an existing proposal, but
+    # --fail-on-drift must still fail the GitHub Actions check whenever
+    # actionable drift remains and the report verdict is not pass.
     rc = main_mod.main(
         [
             "--repo",
@@ -300,9 +304,15 @@ def test_fix_pr_footer_includes_idempotent_status_reason(
             "feature",
             "--repo-root",
             str(tmp_path),
+            "--json-output",
+            str(output),
+            "--fail-on-drift",
         ]
     )
 
-    assert rc == 0
+    assert rc == 1
     assert "reused" in published["body"]
     assert "existing open PR #99" in published["body"]
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["verdict"] == "needs_fix_review"
+    assert report["drift_count"] == 1
