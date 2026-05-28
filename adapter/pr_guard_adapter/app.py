@@ -63,6 +63,12 @@ def create_app(
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         raise RuntimeError("Install adapter dependencies: pip install -e '.[adapter]'") from exc
 
+    # `from __future__ import annotations` stores the local `Request` annotation
+    # as a string. FastAPI resolves endpoint annotations from module globals, so
+    # expose the lazily imported type before route registration while preserving
+    # optional FastAPI imports for non-adapter users.
+    globals()["Request"] = Request
+
     cfg = config or config_from_env()
     svc = service or ProposalService(cfg, cache=InMemoryIdempotencyCache())
     app = FastAPI(title="PR Guard Hermes Adapter", version="0.1.0")
