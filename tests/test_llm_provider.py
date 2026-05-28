@@ -124,6 +124,47 @@ def test_hermes_code_fix_posts_context_and_parses_nested_proposal() -> None:
     assert http.requests[0]["json"]["repo_context"] == "src/pr_guard/main.py\n"
 
 
+def test_hermes_payload_includes_metadata_when_configured() -> None:
+    http = CapturingHttpClient({"action": "skip", "reason": "test"})
+    provider = HermesWebhookProvider(
+        "https://hermes.example/pr-guard",
+        http_client=http,
+        repo="Daysun-Labs/astate-brain",
+        pr_number=42,
+        base_ref="main",
+        head_ref="feature/x",
+        head_sha="abc123",
+    )
+
+    provider.generate_code_fix_proposal(_drift(source="prd"), repo_context="tree\n")
+
+    request_json = http.requests[0]["json"]
+    assert request_json["schema_version"] == "pr-guard.hermes-proposal/v1"
+    assert request_json["metadata"] == {
+        "repo": "Daysun-Labs/astate-brain",
+        "pr_number": 42,
+        "base_ref": "main",
+        "head_ref": "feature/x",
+        "head_sha": "abc123",
+    }
+
+
+def test_resolve_passes_metadata_to_hermes_provider() -> None:
+    http = CapturingHttpClient({"action": "skip", "reason": "test"})
+    provider = resolve_llm_provider(
+        {"HERMES_PR_GUARD_WEBHOOK_URL": "https://hermes.example/pr-guard"},
+        http_client=http,
+        metadata={"repo": "Daysun-Labs/astate-brain", "pr_number": 42},
+    )
+
+    assert isinstance(provider, HermesWebhookProvider)
+    provider.generate_seed_fix(_drift(source="seed"), seed_md_text="# SEED\n")
+    assert http.requests[0]["json"]["metadata"] == {
+        "repo": "Daysun-Labs/astate-brain",
+        "pr_number": 42,
+    }
+
+
 def test_hermes_returns_none_on_skip_or_malformed_response() -> None:
     skipped = HermesWebhookProvider(
         "https://hermes.example/pr-guard",

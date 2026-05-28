@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass, field
+from typing import Protocol
+
+import httpx
+from pydantic import ValidationError
+
+from .models import ProposalRequest
+from .validators import parse_model_proposal, skip, validate_proposal
+
+JsonObject = dict[str, object]
+
+SYSTEM_PROMPT = """You are the Hermes-side proposal provider for pr-guard-bot.
+Return JSON only. Do not use markdown fences.
+You may return either:
+{"action":"update","new_content":"...","message":"...","rationale":"..."}
+or:
+{"action":"skip","reason":"..."}
+
+Rules:
+- Prefer skip over unsafe or speculative edits.
+- For seed_fix, output the full updated SEED.md and preserve unrelated text byte-for-byte.
+- For code_fix, output only a markdown proposal document, not source code patches.
+- Do not claim tests were run.
+"""
+
+
+class ForbiddenRequest(Exception):
+    """Raised when the adapter rejects an authenticated but disallowed request."""
+
+
+class HermesClient(Protocol):
+    def complete_json(self, messages: list[dict[str, str]]) -> str: ...
+
+
+class IdempotencyCache(Protocol):
+    def get(self, key: str) -> JsonObject | None: ...
+
+    def set(self, key: str, value: JsonObject) -> None: ...
+
+
+@dataclass(frozen=True)
+class AdapterConfig:
+    """Runtime configuration for the Hermes PR Guard adapter."""
+
+    allowed_repos: set[str] = field(default_factory=set)
+    single_repo_mode: str | None = None
+    hermes_api_url: str = "http://127.0.0.1:8642"
+    hermes_api_key: str | None = None
+    model: str = "hermes-agent"
+    hermes_timeout: float = 20.0
+    adapter_token: str | None = None
+    max_body_bytes: int = 256_000
+    max_seed_chars: int = 120_000
+    max_repo_context_chars: int = 40_000
+
+
+class InMemoryIdempotencyCache:
+    """Tiny process-local cache for CI retries and local smoke tests."""
+
+    def __init__(self) -> None:
+        self._items: dict[str, JsonObject] = {}
+
+    def get(self, key: str) -> JsonObject | None:
+        value = self._items.get(key)
+        return dict(value) if value is not None else None
+
+    def set(self, key: str, value: JsonObject) -> None:
+        self._items[key] = dict(value)
+
+
+class HermesAPIClient:
+    """Minimal OpenAI-compatible client for Hermes API Server."""
+
+    def __init__(
+        self,
+        *,
+        api_url: str,
+        api_key: str | None,
+        model: str,
+        timeout: float,
+        http_client: httpx.Client | None = None,
+    ) -> None:
+        self.api_url = api_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+        self.http_client = http_client or httpx.Client()
+
+    def complete_json(self, messages: list[dict[str, str]]) -> str:
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        response = self.http_client.post(
+            f"{self.api_url}/v1/chat/completions",
+            json={
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0,
+                "stream": False,
+            },
+            headers=headers or None,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        content = data["choices"][0]["message"]["content"]
+        if not isinstance(content, str):
+            raise ValueError("Hermes API response content was not a string")
+        return content
+
+
+class ProposalService:
+    """Synchronous PR Guard proposal service backed by Hermes."""
+
+    def __init__(
+        self,
+        config: AdapterConfig,
+        *,
+        hermes_client: HermesClient | None = None,
+        cache: IdempotencyCache | None = None,
+    ) -> None:
+        self.config = config
+        self.hermes_client = hermes_client or HermesAPIClient(
+            api_url=config.hermes_api_url,
+            api_key=config.hermes_api_key,
+            model=config.model,
+            timeout=config.hermes_timeout,
+        )
+        self.cache = cache
+
+    def handle(self, payload: object, *, request_id: str | None = None) -> JsonObject:
+        try:
+            request = ProposalRequest.model_validate(payload)
+        except ValidationError as exc:
+            message = exc.errors()[0].get("msg", "validation failed")
+            return skip(f"Malformed PR Guard request: {message}.")
+
+        size_skip = self._validate_input_sizes(request)
+        if size_skip is not None:
+            return size_skip
+
+        self._enforce_repo_allowlist(request)
+
+        boundary_skip = self._validate_task_boundary(request)
+        if boundary_skip is not None:
+            return boundary_skip
+
+        cache_key = request_id or compute_idempotency_key(request, self.config)
+        if self.cache is not None:
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        try:
+            content = self.hermes_client.complete_json(build_messages(request))
+        except httpx.TimeoutException:
+            result: JsonObject = skip("Hermes proposal timed out; leaving drift for human review.")
+        except Exception:
+            result = skip("Hermes proposal failed; leaving drift for human review.")
+        else:
+            try:
+                proposal = parse_model_proposal(content)
+            except ValueError as exc:
+                result = skip(f"Malformed Hermes proposal: {exc}.")
+            else:
+                result = validate_proposal(proposal, request=request)
+
+        if self.cache is not None:
+            self.cache.set(cache_key, result)
+        return result
+
+    def _validate_input_sizes(self, request: ProposalRequest) -> JsonObject | None:
+        seed_too_large = (
+            request.seed_md_text is not None
+            and len(request.seed_md_text) > self.config.max_seed_chars
+        )
+        if seed_too_large:
+            return skip("seed_md_text is too large for synchronous Hermes proposal generation.")
+        repo_context_too_large = (
+            request.repo_context is not None
+            and len(request.repo_context) > self.config.max_repo_context_chars
+        )
+        if repo_context_too_large:
+            return skip("repo_context is too large for synchronous Hermes proposal generation.")
+        return None
+
+    def _enforce_repo_allowlist(self, request: ProposalRequest) -> None:
+        repo = request.metadata.repo or self.config.single_repo_mode
+        if repo is None:
+            raise ForbiddenRequest(
+                "metadata.repo is required unless single_repo_mode is configured"
+            )
+
+        allowed = set(self.config.allowed_repos)
+        if self.config.single_repo_mode:
+            allowed.add(self.config.single_repo_mode)
+        if not allowed:
+            raise ForbiddenRequest("adapter has no allowed repositories configured")
+        if repo not in allowed:
+            raise ForbiddenRequest(f"repository is not allowed: {repo}")
+
+    @staticmethod
+    def _validate_task_boundary(request: ProposalRequest) -> JsonObject | None:
+        if request.task == "seed_fix" and request.drift.source != "seed":
+            return skip("seed_fix requires seed drift source.")
+        if request.task == "code_fix" and request.drift.source != "prd":
+            return skip("code_fix requires prd drift source.")
+        if request.task not in {"seed_fix", "code_fix"}:
+            return skip(f"Unsupported task: {request.task}.")
+        return None
+
+
+def build_messages(request: ProposalRequest) -> list[dict[str, str]]:
+    payload_json = json.dumps(
+        request.prompt_payload(), ensure_ascii=False, sort_keys=True, indent=2
+    )
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"Task: {request.task}\n"
+                f"PR Guard request JSON:\n{payload_json}\n\n"
+                "Return JSON only."
+            ),
+        },
+    ]
+
+
+def compute_idempotency_key(request: ProposalRequest, config: AdapterConfig) -> str:
+    metadata = request.metadata
+    parts = [
+        metadata.repo or config.single_repo_mode or "",
+        str(metadata.pr_number or ""),
+        metadata.head_sha or metadata.head_ref or "",
+        request.task,
+        request.drift.source_file or "",
+        str(request.drift.line or ""),
+        request.drift.quote,
+    ]
+    raw = "\0".join(parts).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()

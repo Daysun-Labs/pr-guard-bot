@@ -355,7 +355,18 @@ def main(argv: list[str] | None = None) -> int:
     addressed = total_reqs - len(raw_drifts)
 
     # 4a) Fix-PR 자동 생성 (Hermes webhook preferred; Anthropic fallback)
-    provider = None if args.no_publish else resolve_llm_provider(os.environ)
+    provider_metadata = {
+        "repo": args.repo,
+        "pr_number": args.pr_number,
+        "base_ref": args.base_ref,
+        "head_ref": args.head_ref,
+        "head_sha": os.environ.get("GITHUB_SHA"),
+    }
+    provider = (
+        None
+        if args.no_publish
+        else resolve_llm_provider(os.environ, metadata=provider_metadata)
+    )
     max_fixes = int(os.environ.get("PR_GUARD_MAX_FIX_PRS", str(MAX_FIX_PRS_DEFAULT)))
     fix_prs: list[tuple[DriftItem, int]] = []
     if provider is not None and actionable and max_fixes > 0 and octokit is not None:

@@ -1,0 +1,25 @@
+{
+  "schema_version": "pr-guard.hermes-proposal/v1",
+  "task": "seed_fix",
+  "metadata": {
+    "repo": "Daysun-Labs/astate-brain",
+    "pr_number": 43,
+    "base_ref": "main",
+    "head_ref": "feature/seed-fix",
+    "head_sha": "def456"
+  },
+  "drift": {
+    "type": "missing_requirement",
+    "severity": "high",
+    "source": "seed",
+    "source_file": "SEED.md",
+    "section": "Acceptance Criteria",
+    "kind": "acceptance",
+    "quote": "The seed must state that public fork PRs never call external providers.",
+    "line": 21,
+    "score": 0.38
+  },
+  "seed_md_text": "# SEED\n\n## Acceptance Criteria\n\n- Existing criterion.\n",
+  "seed_md_path": "SEED.md",
+  "proposal_shape": ["action", "new_content", "message", "rationale"]
+}
