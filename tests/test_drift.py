@@ -72,6 +72,21 @@ def test_drift_reports_unmet_requirement() -> None:
     assert item.severity in {"high", "medium", "low"}
 
 
+def test_filter_keeps_detector_unmet_but_relevant_partial_match() -> None:
+    diff = parse_unified_diff(SAMPLE_DIFF)
+    reqs = [
+        _req("widget Slack module", source="seed", source_file="SEED.md", line=43),
+    ]
+
+    drifts = detect_drift(reqs, diff)
+    actionable, suppressed = filter_actionable_drift(drifts)
+
+    assert len(drifts) == 1
+    assert drifts[0].score == 0.3333
+    assert actionable == drifts
+    assert suppressed == {"non_goal": 0, "unrelated": 0}
+
+
 def test_detect_drift_accepts_spec_bundle() -> None:
     diff = parse_unified_diff(SAMPLE_DIFF)
     bundle = SpecBundle(
@@ -139,4 +154,10 @@ def test_filter_empty_input() -> None:
 def test_filter_keeps_relevant_partial_match_violations() -> None:
     items = [_drift(score=0.1), _drift(score=0.33), _drift(score=0.34), _drift(score=0.99)]
     actionable, _ = filter_actionable_drift(items)
-    assert [d.score for d in actionable] == [0.34, 0.99]
+    assert [d.score for d in actionable] == [0.33, 0.34, 0.99]
+
+
+def test_filter_floor_is_inclusive() -> None:
+    actionable, suppressed = filter_actionable_drift([_drift(score=0.25), _drift(score=0.2499)])
+    assert [d.score for d in actionable] == [0.25]
+    assert suppressed == {"non_goal": 0, "unrelated": 1}
