@@ -33,8 +33,10 @@ _SEVERITY_BY_KIND = {
 }
 
 # Below this floor, overlap is usually just generic vocabulary ("PR", "user",
-# "tool") rather than evidence that the PR is attempting the requirement.
-ACTIONABLE_SCORE_FLOOR = 0.34
+# "tool") rather than evidence that the PR is attempting the requirement. Keep
+# this below the matcher threshold so relevant partial matches can remain
+# actionable instead of being impossible to surface.
+ACTIONABLE_SCORE_FLOOR = 0.25
 
 
 @dataclass(frozen=True)
