@@ -213,7 +213,7 @@ def test_max_fix_prs_zero_explains_fix_generation_is_disabled(
         lambda raw: ([_drift()], {"unrelated": 0, "non_goal": 0}),
     )
     monkeypatch.setattr(main_mod, "create_github_client", lambda token: object())
-    monkeypatch.setattr(main_mod, "resolve_llm_provider", lambda env: object())
+    monkeypatch.setattr(main_mod, "resolve_llm_provider", lambda env, **kwargs: object())
     published: dict[str, str] = {}
 
     def record_publish(*args: Any, **kwargs: Any) -> None:

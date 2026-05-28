@@ -22,6 +22,8 @@ from .patcher import (
     generate_seed_fix,
 )
 
+PROPOSAL_SCHEMA_VERSION = "pr-guard.hermes-proposal/v1"
+
 
 class LLMProvider(Protocol):
     def generate_seed_fix(
@@ -129,6 +131,12 @@ class HermesWebhookProvider:
         http_client: HttpClient | None = None,
         timeout: float = 30.0,
         token: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        repo: str | None = None,
+        pr_number: int | None = None,
+        base_ref: str | None = None,
+        head_ref: str | None = None,
+        head_sha: str | None = None,
     ) -> None:
         if not webhook_url.strip():
             raise ValueError("webhook_url is required")
@@ -136,6 +144,21 @@ class HermesWebhookProvider:
         self.http_client = http_client or httpx.Client()
         self.timeout = timeout
         self.token = token.strip() if token else None
+        typed_metadata = {
+            "repo": repo,
+            "pr_number": pr_number,
+            "base_ref": base_ref,
+            "head_ref": head_ref,
+            "head_sha": head_sha,
+        }
+        merged_metadata: dict[str, Any] = {
+            key: value for key, value in typed_metadata.items() if value is not None
+        }
+        if metadata:
+            merged_metadata.update(
+                {key: value for key, value in metadata.items() if value is not None}
+            )
+        self.metadata = merged_metadata
 
     def generate_seed_fix(
         self,
@@ -175,6 +198,12 @@ class HermesWebhookProvider:
         return _parse_webhook_proposal(data, file_path=path)
 
     def _post(self, payload: dict[str, Any]) -> Any:
+        if self.metadata:
+            payload = {
+                "schema_version": PROPOSAL_SCHEMA_VERSION,
+                "metadata": self.metadata,
+                **payload,
+            }
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else None
         response = self.http_client.post(
             self.webhook_url,
@@ -190,6 +219,7 @@ def resolve_llm_provider(
     env: Mapping[str, str | None],
     *,
     http_client: HttpClient | None = None,
+    metadata: Mapping[str, Any] | None = None,
 ) -> LLMProvider | None:
     hermes_url = (env.get("HERMES_PR_GUARD_WEBHOOK_URL") or "").strip()
     if hermes_url:
@@ -197,6 +227,7 @@ def resolve_llm_provider(
             hermes_url,
             http_client=http_client,
             token=env.get("HERMES_PR_GUARD_WEBHOOK_TOKEN"),
+            metadata=metadata,
         )
 
     anthropic_key = (env.get("ANTHROPIC_API_KEY") or "").strip()
