@@ -94,5 +94,5 @@ def _summary(verdict: str, *, drift_count: int, fix_pr_count: int) -> str:
         return "No actionable drift detected."
     if verdict == NEEDS_FIX_REVIEW:
         noun = "fix PR" if fix_pr_count == 1 else "fix PRs"
-        return f"{drift_count} actionable drift item(s) detected; {fix_pr_count} {noun} created for review."
+        return f"{drift_count} actionable drift item(s) detected; {fix_pr_count} {noun} ready/reused for review."
     return f"{drift_count} actionable drift item(s) detected; no fix PRs were created."

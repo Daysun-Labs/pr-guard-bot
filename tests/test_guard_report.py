@@ -74,6 +74,32 @@ def test_report_fails_when_actionable_drift_remains_without_fix_prs() -> None:
     assert "2 actionable drift" in report["summary"]
 
 
+def test_report_summary_describes_reused_fix_pr_without_claiming_creation() -> None:
+    drift = _drift(source="seed", quote="document OAuth setup")
+
+    report = build_guard_report(
+        repo="octo/app",
+        pr_number=12,
+        actionable_drifts=[drift],
+        fix_prs=[
+            {
+                "drift": drift,
+                "status": "reused",
+                "branch": "pr-guard/seed-fix/seed-document-oauth-1234",
+                "pr_number": 99,
+                "reason": "existing open PR #99 already uses branch; reused instead",
+            }
+        ],
+        suppressed={"unrelated": 0, "non_goal": 0},
+    )
+
+    assert report["verdict"] == "needs_fix_review"
+    assert report["fix_pr_count"] == 1
+    assert "1 fix PR" in report["summary"]
+    assert "ready/reused for review" in report["summary"]
+    assert "created for review" not in report["summary"]
+
+
 def test_report_preserves_fix_pr_status_and_skip_reason() -> None:
     drift = _drift(source="seed", quote="document OAuth setup")
 
