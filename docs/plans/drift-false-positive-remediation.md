@@ -124,42 +124,7 @@ Semantic eval fixtures now cover:
 python -m pip install -e ".[dev,anthropic,adapter]"
 PYTHONPATH=src pytest tests/ -q
 PYTHONPATH=src pytest -v
-
-# Self-replay: run guard primitives over the repo's own recent commits.
-# Provider-less default mode must keep default_failures=0.
-PYTHONPATH=src python - <<'PY'
-from pathlib import Path
-import subprocess
-from pr_guard.diff_extractor import parse_unified_diff
-from pr_guard.drift import detect_drift, filter_actionable_drift, select_blocking_drift
-from pr_guard.spec_parser import parse_repo
-
-spec = parse_repo(Path("."))
-commits = subprocess.check_output(
-    ["git", "rev-list", "--max-count=12", "HEAD"], text=True
-).splitlines()
-default_failures = strict_failures = advisory_total = 0
-for commit in reversed(commits):
-    parents = subprocess.check_output(
-        ["git", "rev-list", "--parents", "-n", "1", commit], text=True
-    ).split()
-    if len(parents) < 2:
-        continue
-    diff = parse_unified_diff(
-        subprocess.check_output(["git", "diff", f"{parents[1]}...{commit}"], text=True)
-    )
-    raw = detect_drift(spec, diff)
-    advisory, _ = filter_actionable_drift(raw)
-    default_failures += 1 if select_blocking_drift(advisory, provider=None) else 0
-    strict_failures += 1 if select_blocking_drift(advisory, fail_on_advisory=True) else 0
-    advisory_total += len(advisory)
-print(
-    f"default_failures={default_failures} "
-    f"strict_failures={strict_failures} advisory_total={advisory_total}"
-)
-if default_failures:
-    raise SystemExit(1)
-PY
+PYTHONPATH=src python tools/replay_pr_guard_history.py --commits 12
 ```
 
 ## Remaining Work
@@ -197,4 +162,5 @@ renames, touched-but-unrelated code, and true missing-requirement code changes.
 > `blocking_drift_classification` and run the live workflow-dispatch smoke after
 > pushing the branch. Keep the conservative policy: no provider/uncertainty -> no
 > blocking -> CI green. Verify with `PYTHONPATH=src pytest tests/ -q`,
-> `PYTHONPATH=src pytest -v`, and the 12-commit self-replay.
+> `PYTHONPATH=src pytest -v`, and
+> `PYTHONPATH=src python tools/replay_pr_guard_history.py --commits 12`.

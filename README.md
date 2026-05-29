@@ -138,7 +138,7 @@ Ouroboros can sit behind the Hermes webhook for deeper semantic review, but the 
 ## Development
 
 ```bash
-python -m pip install -e ".[dev,anthropic]"
+python -m pip install -e ".[dev,anthropic,adapter]"
 pytest
 python -m compileall -q src tests
 ```
@@ -155,6 +155,16 @@ python -m pr_guard \
   --no-publish \
   --fail-on-drift
 ```
+
+History replay smoke:
+
+```bash
+PYTHONPATH=src python tools/replay_pr_guard_history.py --commits 12
+```
+
+This dogfoods the current matcher against recent repo history and fails only if
+provider-less default mode would block CI. Legacy strict advisory failures are
+reported for visibility.
 
 ## Security notes
 
