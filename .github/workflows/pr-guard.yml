@@ -74,8 +74,8 @@ jobs:
 
       - name: Install pr-guard
         run: |
-          # 봇 본체, 테스트 의존성, legacy Anthropic fallback extra 설치
-          pip install -e ".[dev,anthropic]"
+          # 봇 본체, 테스트 의존성, adapter smoke deps, legacy Anthropic fallback extra 설치
+          pip install -e ".[dev,anthropic,adapter]"
 
       - name: Run PR Guard
         if: github.event_name == 'pull_request'

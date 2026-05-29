@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Iterable, Mapping, Any
 
 from .drift import DriftItem
+from .drift_classifier import classify_drift
 
 
 _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
@@ -40,14 +41,24 @@ def format_drift_comment(drifts: Iterable[Any], *, title: str = "PR Guard — PR
 
     # Summary counts
     by_sev: dict[str, int] = {}
+    by_category: dict[str, int] = {}
     for it in items:
         by_sev[it["severity"]] = by_sev.get(it["severity"], 0) + 1
+        category = classify_drift(it)
+        by_category[category] = by_category.get(category, 0) + 1
     summary_parts = [
         f"{_SEVERITY_EMOJI.get(sev, '•')} **{sev}**: {by_sev[sev]}"
         for sev in ("high", "medium", "low")
         if sev in by_sev
     ]
     lines.append(f"Found **{len(items)}** drift finding(s) — " + ", ".join(summary_parts))
+    category_parts = [
+        f"`{category}`: {by_category[category]}"
+        for category in ("spec-missing", "spec-violation", "spec-ambiguous", "unknown")
+        if category in by_category
+    ]
+    if category_parts:
+        lines.append("Classifier: " + ", ".join(category_parts))
     lines.append("")
 
     def _sort_key(it: Mapping[str, Any]):
@@ -71,7 +82,11 @@ def format_drift_comment(drifts: Iterable[Any], *, title: str = "PR Guard — PR
             loc = f"`{it.get('source_file','?')}:{it.get('line','?')}`"
             section = it.get("section") or ""
             kind = it.get("kind") or ""
-            lines.append(f"- {emoji} **{sev.upper()}** {loc} _{kind}_ — {section}")
+            category = classify_drift(it)
+            lines.append(
+                f"- {emoji} **{sev.upper()}** {loc} _{kind}_ "
+                f"`{category}` — {section}"
+            )
             if quote:
                 lines.append(f"  > {quote}")
         lines.append("")
