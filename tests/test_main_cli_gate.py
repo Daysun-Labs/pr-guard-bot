@@ -65,7 +65,7 @@ def _install_common_stubs(monkeypatch: Any, actionable: list[DriftItem]) -> dict
     return calls
 
 
-def test_no_publish_writes_report_without_github_token_and_fails_on_drift(
+def test_no_publish_fails_only_when_advisory_drift_is_promoted_to_blocking(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
@@ -90,6 +90,7 @@ def test_no_publish_writes_report_without_github_token_and_fails_on_drift(
             str(output),
             "--no-publish",
             "--fail-on-drift",
+            "--fail-on-advisory-drift",
         ]
     )
 
@@ -98,7 +99,43 @@ def test_no_publish_writes_report_without_github_token_and_fails_on_drift(
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["verdict"] == "fail"
     assert report["drift_count"] == 1
+    assert report["blocking_count"] == 1
     assert report["suppressed"] == {"unrelated": 1, "non_goal": 0}
+
+
+def test_no_publish_advisory_drift_is_non_blocking_by_default(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    # The core false-positive fix: a static token-coverage drift item is
+    # surfaced (drift_count == 1) but does NOT fail the check by default.
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    _install_common_stubs(monkeypatch, [_drift()])
+    output = tmp_path / "pr-guard-report.json"
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+            "--json-output",
+            str(output),
+            "--no-publish",
+            "--fail-on-drift",
+        ]
+    )
+
+    assert rc == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["verdict"] == "pass"
+    assert report["drift_count"] == 1
+    assert report["blocking_count"] == 0
 
 
 def test_no_publish_pass_report_returns_zero_with_fail_on_drift(

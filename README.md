@@ -17,7 +17,7 @@ Read PRD.md / SEED.md / SEED.yaml + PR diff
     ↓
 Classify actionable drift / missing implementation / spec mismatch
     ↓
-├─ Required check: fail the job when actionable drift remains
+├─ Required check: fail the job on blocking drift (advisory findings stay green)
 ├─ pr-guard-report.json: CI artifact for machines
 ├─ PR comment: stable marker-based summary, updated on each run
 ├─ Slack notification: optional incoming webhook
@@ -105,8 +105,9 @@ python -m pr_guard \
 
 Important flags:
 
-- `--json-output`: writes a report with `schema_version`, `verdict`, `drifts`, `fix_prs`, and `suppressed`.
-- `--fail-on-drift`: exits non-zero when the verdict is not `pass`, making the job usable as a required status check.
+- `--json-output`: writes a report with `schema_version`, `verdict`, `drift_count`, `blocking_count`, `drifts`, `fix_prs`, and `suppressed`.
+- `--fail-on-drift`: exits non-zero when the verdict is not `pass`, making the job usable as a required status check. By default only *blocking* drift (or a generated fix PR) makes the verdict non-`pass`; static token-coverage findings are **advisory** — reported in the PR comment and JSON but non-blocking, since matching on token overlap alone produces false positives on unrelated chores.
+- `--fail-on-advisory-drift`: legacy strict mode — promotes every advisory finding to blocking so any drift fails the check. Off by default.
 - `--no-publish`: dry-run mode; skips GitHub comments, Slack, onboarding PRs, and fix PR creation.
 - `--publish-best-effort`: writes the JSON report and keeps the check verdict authoritative even when PR comment publishing is blocked by repository permissions.
 

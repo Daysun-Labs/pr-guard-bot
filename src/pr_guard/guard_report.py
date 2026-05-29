@@ -20,19 +20,30 @@ def build_guard_report(
     actionable_drifts: Iterable[DriftItem],
     fix_prs: Iterable[tuple[DriftItem, int] | dict[str, Any]],
     suppressed: dict[str, int] | None = None,
+    blocking_drifts: Iterable[DriftItem] | None = None,
 ) -> dict[str, Any]:
     """Build the stable JSON-serializable report emitted by the CI gate.
 
+    ``actionable_drifts`` are *advisory* findings — surfaced for humans in the
+    PR comment and recorded in ``drift_count``/``drifts``, but they do not by
+    themselves fail the check. ``blocking_drifts`` is the (usually smaller,
+    higher-confidence) subset that drives a failing verdict; when omitted there
+    is no blocking drift and an advisory-only report passes. See
+    ``drift.select_blocking_drift`` for why the static matcher leaves blocking
+    drift empty by default.
+
     Verdict rules are intentionally simple and deterministic:
-      - ``pass`` when there is no actionable drift.
       - ``needs_fix_review`` when one or more fix PRs were generated.
-      - ``fail`` when actionable drift remains and no fix PR was generated.
+      - ``fail`` when blocking drift remains and no fix PR was generated.
+      - ``pass`` otherwise (including advisory-only drift with no fix PRs).
     """
     drift_items = list(actionable_drifts)
+    block_items = list(blocking_drifts) if blocking_drifts is not None else []
     fix_items = [_normalize_fix_pr(item) for item in fix_prs]
     drift_count = len(drift_items)
+    blocking_count = len(block_items)
     fix_pr_count = sum(1 for item in fix_items if item.get("pr_number") is not None)
-    verdict = determine_verdict(drift_count=drift_count, fix_pr_count=fix_pr_count)
+    verdict = determine_verdict(blocking_count=blocking_count, fix_pr_count=fix_pr_count)
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -40,20 +51,26 @@ def build_guard_report(
         "pr_number": pr_number,
         "verdict": verdict,
         "drift_count": drift_count,
+        "blocking_count": blocking_count,
         "fix_pr_count": fix_pr_count,
         "drifts": [d.to_dict() for d in drift_items],
         "fix_prs": fix_items,
         "suppressed": _normalize_suppressed(suppressed),
-        "summary": _summary(verdict, drift_count=drift_count, fix_pr_count=fix_pr_count),
+        "summary": _summary(
+            verdict,
+            drift_count=drift_count,
+            blocking_count=blocking_count,
+            fix_pr_count=fix_pr_count,
+        ),
     }
 
 
-def determine_verdict(*, drift_count: int, fix_pr_count: int) -> str:
-    if drift_count <= 0:
-        return PASS
+def determine_verdict(*, blocking_count: int, fix_pr_count: int) -> str:
     if fix_pr_count > 0:
         return NEEDS_FIX_REVIEW
-    return FAIL
+    if blocking_count > 0:
+        return FAIL
+    return PASS
 
 
 def write_guard_report(report: dict[str, Any], path: str | Path) -> None:
@@ -89,10 +106,12 @@ def _normalize_suppressed(suppressed: dict[str, int] | None) -> dict[str, int]:
     }
 
 
-def _summary(verdict: str, *, drift_count: int, fix_pr_count: int) -> str:
-    if verdict == PASS:
-        return "No actionable drift detected."
+def _summary(verdict: str, *, drift_count: int, blocking_count: int, fix_pr_count: int) -> str:
     if verdict == NEEDS_FIX_REVIEW:
         noun = "fix PR" if fix_pr_count == 1 else "fix PRs"
-        return f"{drift_count} actionable drift item(s) detected; {fix_pr_count} {noun} ready/reused for review."
-    return f"{drift_count} actionable drift item(s) detected; no fix PRs were created."
+        return f"{drift_count} drift item(s) detected; {fix_pr_count} {noun} ready/reused for review."
+    if verdict == FAIL:
+        return f"{blocking_count} blocking drift item(s) detected; no fix PRs were created."
+    if drift_count > 0:
+        return f"{drift_count} advisory drift item(s) detected (non-blocking); no blocking drift."
+    return "No actionable drift detected."

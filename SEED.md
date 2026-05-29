@@ -39,8 +39,8 @@ GitHub (코멘트 업데이트, 선택적 별도 수정 PR 생성)
 2. PRD.md+SEED.md 존재 리포: trusted same-repository PR에서는 5분 내 marker-based PR 코멘트 + 선택적 Slack incoming-webhook 알림
 3. public fork PR: `--no-publish` artifact-only 모드로 실행되어 secrets/write side effect 없이 `pr-guard-report.json`과 check verdict만 생성
 4. PRD/SEED 없는 리포: onboarding 안내 코멘트 또는 안내 PR 생성
-5. drift 감지 시 `pr-guard-report.json`에 `schema_version`, `verdict`, `drift_count`, `drifts`, `suppressed`, `fix_prs` 기록
-6. `--fail-on-drift` 사용 시 actionable drift가 1건 이상이면 GitHub Actions check가 실패
+5. drift 감지 시 `pr-guard-report.json`에 `schema_version`, `verdict`, `drift_count`, `blocking_count`, `drifts`, `suppressed`, `fix_prs` 기록
+6. `--fail-on-drift` 사용 시 blocking drift가 1건 이상이면 GitHub Actions check가 실패. 정적 토큰 매칭 부분일치(advisory)는 PR 코멘트·report에 노출되되 기본적으로 check를 실패시키지 않으며, `--fail-on-advisory-drift`로 strict 모드 opt-in 가능
 7. Hermes webhook provider 설정 시 PRD 위반은 code-fix, SEED 위반은 seed-fix 수정 PR 제안을 생성
 8. 수정 PR은 원본 PR을 mention (`Fixes drift in #<PR번호>`)
 9. 모든 publish 동작은 원본 PR에 marker comment를 업데이트하고 Slack incoming-webhook 알림과 함께 실행

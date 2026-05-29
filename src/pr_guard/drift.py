@@ -14,7 +14,7 @@ generation can cite the exact PRD/SEED line.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from typing import Iterable
 
 from .diff_extractor import NormalizedDiff
@@ -115,6 +115,33 @@ def filter_actionable_drift(
             continue
         actionable.append(d)
     return actionable, suppressed
+
+
+def select_blocking_drift(
+    advisory: Iterable[DriftItem],
+    *,
+    fail_on_advisory: bool = False,
+) -> list[DriftItem]:
+    """Return the drift items that should *block* CI (fail the check).
+
+    This is deliberately separate from ``filter_actionable_drift``. The static
+    matcher only produces *advisory* drift — token-coverage partial matches
+    sitting just below the matcher threshold (see ``ACTIONABLE_SCORE_FLOOR``).
+    That signal is far too noisy to fail a required check on: a token-coverage
+    score lands in the actionable band only when ~1/3 of a requirement's tokens
+    happen to appear as substrings of the diff, which fires on unrelated chores
+    (dependency bumps, workflow edits) that merely share vocabulary with a spec
+    line. Blocking on it produces frequent false-positive CI failures.
+
+    So by default nothing here is blocking — advisory drift is surfaced in the
+    PR comment and JSON report for humans, but the check stays green. A
+    high-confidence source (a semantic/LLM oracle) is the intended producer of
+    genuinely blocking drift; this function is the seam where it plugs in.
+
+    Set ``fail_on_advisory`` to opt back into the legacy strict behaviour where
+    every advisory item blocks the check.
+    """
+    return list(advisory) if fail_on_advisory else []
 
 
 def _to_drift_item(m: MatchResult) -> DriftItem:

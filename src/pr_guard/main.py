@@ -24,7 +24,7 @@ import httpx
 from .comment_format import format_drift_comment
 from .detector import detect_spec_files
 from .diff_extractor import parse_unified_diff
-from .drift import DriftItem, detect_drift, filter_actionable_drift
+from .drift import DriftItem, detect_drift, filter_actionable_drift, select_blocking_drift
 from .fix_pr import create_or_reuse_fix_pr
 from .github_client import create_github_client
 from .guard_report import build_guard_report, write_guard_report
@@ -340,6 +340,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Return nonzero when the structured report verdict is not pass",
     )
+    parser.add_argument(
+        "--fail-on-advisory-drift",
+        action="store_true",
+        help=(
+            "Legacy strict mode: treat every advisory (token-coverage) drift item "
+            "as blocking. Off by default because static partial matches are noisy "
+            "and produce false-positive CI failures; advisory drift is otherwise "
+            "reported in the PR comment without failing the check."
+        ),
+    )
     args = parser.parse_args(argv)
 
     gh_token = os.environ.get("GITHUB_TOKEN")
@@ -408,7 +418,10 @@ def main(argv: list[str] | None = None) -> int:
 
     # 4) Detect drift → filter actionable → render + post comment
     raw_drifts = detect_drift(spec_bundle, diff)
-    actionable, suppressed = filter_actionable_drift(raw_drifts)
+    advisory, suppressed = filter_actionable_drift(raw_drifts)
+    blocking = select_blocking_drift(
+        advisory, fail_on_advisory=args.fail_on_advisory_drift
+    )
     total_reqs = len(spec_bundle.requirements)
     addressed = total_reqs - len(raw_drifts)
 
@@ -427,10 +440,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     max_fixes = int(os.environ.get("PR_GUARD_MAX_FIX_PRS", str(MAX_FIX_PRS_DEFAULT)))
     fix_prs: list[Any] = []
-    if provider is not None and actionable and max_fixes > 0 and octokit is not None:
+    if provider is not None and advisory and max_fixes > 0 and octokit is not None:
         base_sha = _git_rev_parse(f"origin/{args.base_ref}", repo_root=args.repo_root)
         fix_prs = _maybe_generate_fix_prs(
-            actionable=actionable,
+            actionable=advisory,
             octokit=octokit,
             owner=owner,
             repo_name=repo_name,
@@ -447,6 +460,12 @@ def main(argv: list[str] | None = None) -> int:
         f"suppressed {suppressed['unrelated']} unrelated, "
         f"{suppressed['non_goal']} non-goal items (L1 noise reduction).",
     ]
+    if advisory and not blocking:
+        footer_parts.append(
+            "\n_(advisory only — these are static token-coverage findings and do "
+            "**not** fail the check. Run with `--fail-on-advisory-drift` to block "
+            "on them.)_"
+        )
     if fix_prs:
         fix_list = "\n".join(_format_fix_pr_result(item) for item in fix_prs)
         ready_count = _fix_pr_ready_count(fix_prs)
@@ -455,17 +474,17 @@ def main(argv: list[str] | None = None) -> int:
             "\n**Auto-generated fix PR handling** "
             f"({ready_count} ready/reused, {skipped_count} skipped):\n{fix_list}"
         )
-    elif actionable and max_fixes <= 0:
+    elif advisory and max_fixes <= 0:
         footer_parts.append(
             "\n_(auto fix-PR generation disabled by `PR_GUARD_MAX_FIX_PRS=0`; "
             "JSON report/comment only)_"
         )
-    elif provider is not None and actionable:
+    elif provider is not None and advisory:
         footer_parts.append(
             "\n_(no fix PRs created — LLM provider declined or generation hit an error; "
             "see Actions logs)_"
         )
-    elif actionable and provider is None:
+    elif advisory and provider is None:
         footer_parts.append(
             "\n_(set `HERMES_PR_GUARD_WEBHOOK_URL` (preferred) or `ANTHROPIC_API_KEY` "
             "to enable auto fix-PR generation)_"
@@ -475,14 +494,15 @@ def main(argv: list[str] | None = None) -> int:
     report = build_guard_report(
         repo=args.repo,
         pr_number=args.pr_number,
-        actionable_drifts=actionable,
+        actionable_drifts=advisory,
         fix_prs=fix_prs,
         suppressed=suppressed,
+        blocking_drifts=blocking,
     )
     if args.json_output:
         write_guard_report(report, args.json_output)
 
-    comment_body = format_drift_comment(actionable) + footer
+    comment_body = format_drift_comment(advisory) + footer
     if not args.no_publish and http is not None:
         try:
             publish_pr_comment(
@@ -502,8 +522,8 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
     print(
-        f"[drift] raw={len(raw_drifts)} actionable={len(actionable)} "
-        f"fix_prs={len(fix_prs)} "
+        f"[drift] raw={len(raw_drifts)} advisory={len(advisory)} "
+        f"blocking={len(blocking)} fix_prs={len(fix_prs)} "
         f"(suppressed unrelated={suppressed['unrelated']}, non_goal={suppressed['non_goal']})"
     )
 
@@ -512,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             send_slack_webhook(
                 slack_webhook,
-                _slack_summary(args.repo, args.pr_number, len(actionable)),
+                _slack_summary(args.repo, args.pr_number, len(advisory)),
             )
         except Exception as e:
             print(f"WARN: Slack 알림 실패: {e}", file=sys.stderr)

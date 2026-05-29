@@ -7,7 +7,12 @@ and the drift == 0 case (PR diff covers every requirement).
 from __future__ import annotations
 
 from pr_guard.diff_extractor import parse_unified_diff
-from pr_guard.drift import DriftItem, detect_drift, filter_actionable_drift
+from pr_guard.drift import (
+    DriftItem,
+    detect_drift,
+    filter_actionable_drift,
+    select_blocking_drift,
+)
 from pr_guard.spec_parser import Requirement, SpecBundle
 
 
@@ -161,3 +166,21 @@ def test_filter_floor_is_inclusive() -> None:
     actionable, suppressed = filter_actionable_drift([_drift(score=0.33), _drift(score=0.3299)])
     assert [d.score for d in actionable] == [0.33]
     assert suppressed == {"non_goal": 0, "unrelated": 1}
+
+
+# select_blocking_drift
+
+
+def test_advisory_drift_is_non_blocking_by_default() -> None:
+    advisory = [_drift(score=0.33), _drift(score=0.5)]
+    assert select_blocking_drift(advisory) == []
+
+
+def test_fail_on_advisory_promotes_every_item_to_blocking() -> None:
+    advisory = [_drift(score=0.33), _drift(score=0.5)]
+    blocking = select_blocking_drift(advisory, fail_on_advisory=True)
+    assert blocking == advisory
+
+
+def test_select_blocking_empty_input() -> None:
+    assert select_blocking_drift([], fail_on_advisory=True) == []
