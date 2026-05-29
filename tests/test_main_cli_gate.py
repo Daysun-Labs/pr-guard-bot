@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from pr_guard import main as main_mod
-from pr_guard.drift import DriftItem
+from pr_guard.drift import BlockingDriftDecision, DriftItem
 from pr_guard.spec_parser import SpecBundle
 
 
@@ -176,7 +176,12 @@ def test_provider_semantic_blocking_fails_gate_without_fix_prs(
     class Provider:
         def classify_blocking_drift(self, items, *, diff_summary=None):
             assert diff_summary == ""
-            return [items[0]]
+            return [
+                BlockingDriftDecision(
+                    drift=items[0],
+                    reason="Webhook code path changed but signature verification remains absent.",
+                )
+            ]
 
     monkeypatch.setattr(main_mod, "resolve_llm_provider", lambda env, **kwargs: Provider())
     published: dict[str, str] = {}
@@ -207,10 +212,12 @@ def test_provider_semantic_blocking_fails_gate_without_fix_prs(
 
     assert rc == 1
     assert "semantic classifier marked 1 advisory drift item" in published["body"]
+    assert "Webhook code path changed" in published["body"]
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["verdict"] == "fail"
     assert report["drift_count"] == 1
     assert report["blocking_count"] == 1
+    assert report["blocking_drifts"][0]["reason"].startswith("Webhook code path")
 
 
 def test_missing_provider_key_keeps_advisory_drift_green(

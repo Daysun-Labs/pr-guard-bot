@@ -8,10 +8,12 @@ from __future__ import annotations
 
 from pr_guard.diff_extractor import parse_unified_diff
 from pr_guard.drift import (
+    BlockingDriftDecision,
     DriftItem,
     detect_drift,
     filter_actionable_drift,
     select_blocking_drift,
+    select_blocking_drift_decisions,
 )
 from pr_guard.spec_parser import Requirement, SpecBundle
 
@@ -198,6 +200,25 @@ def test_provider_can_promote_advisory_items_to_blocking() -> None:
     )
 
     assert blocking == [advisory[1]]
+
+
+def test_provider_blocking_decisions_preserve_reason() -> None:
+    advisory = [_drift(score=0.33)]
+
+    class Provider:
+        def classify_blocking_drift(self, items, *, diff_summary=None):
+            return [
+                BlockingDriftDecision(
+                    drift=items[0],
+                    reason="Diff changes the scoped path but omits required behavior.",
+                )
+            ]
+
+    decisions = select_blocking_drift_decisions(advisory, provider=Provider())
+
+    assert [decision.drift for decision in decisions] == advisory
+    assert decisions[0].reason.startswith("Diff changes")
+    assert decisions[0].source == "semantic"
 
 
 def test_provider_absence_or_failure_degrades_to_non_blocking() -> None:

@@ -24,7 +24,13 @@ import httpx
 from .comment_format import format_drift_comment
 from .detector import detect_spec_files
 from .diff_extractor import parse_unified_diff
-from .drift import DriftItem, detect_drift, filter_actionable_drift, select_blocking_drift
+from .drift import (
+    BlockingDriftDecision,
+    DriftItem,
+    detect_drift,
+    filter_actionable_drift,
+    select_blocking_drift_decisions,
+)
 from .fix_pr import create_or_reuse_fix_pr
 from .github_client import create_github_client
 from .guard_report import build_guard_report, write_guard_report
@@ -318,6 +324,21 @@ def _format_fix_pr_result(item: tuple[DriftItem, int] | dict[str, Any]) -> str:
     return " — ".join(parts)
 
 
+def _format_blocking_reasons(decisions: list[BlockingDriftDecision]) -> str:
+    semantic = [decision for decision in decisions if decision.source == "semantic"]
+    if not semantic:
+        return ""
+    lines = ["\n**Semantic blocking evidence:**"]
+    for decision in semantic[:5]:
+        drift = decision.drift
+        loc = f"{drift.source_file}:{drift.line}"
+        reason = decision.reason.strip() or "Classified as blocking by semantic provider."
+        lines.append(f"- `{loc}` — {reason}")
+    if len(semantic) > 5:
+        lines.append(f"- ... {len(semantic) - 5} more blocking item(s)")
+    return "\n".join(lines)
+
+
 def _fix_pr_ready_count(fix_prs: list[tuple[DriftItem, int] | dict[str, Any]]) -> int:
     count = 0
     for item in fix_prs:
@@ -454,12 +475,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.no_publish
         else resolve_llm_provider(os.environ, metadata=provider_metadata)
     )
-    blocking = select_blocking_drift(
+    blocking_decisions = select_blocking_drift_decisions(
         advisory,
         fail_on_advisory=args.fail_on_advisory_drift,
         provider=provider,
         diff_summary=_diff_summary_for_semantic_blocking(diff),
     )
+    blocking = [decision.drift for decision in blocking_decisions]
     total_reqs = len(spec_bundle.requirements)
     addressed = total_reqs - len(raw_drifts)
 
@@ -503,6 +525,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"\n_(semantic classifier marked {len(blocking)} advisory drift item(s) "
                 "as blocking.)_"
             )
+            blocking_reasons = _format_blocking_reasons(blocking_decisions)
+            if blocking_reasons:
+                footer_parts.append(blocking_reasons)
     if advisory and provider is None:
         footer_parts.append(
             "\n_(no LLM provider configured; semantic blocking classification was skipped, "
@@ -535,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
         actionable_drifts=advisory,
         fix_prs=fix_prs,
         suppressed=suppressed,
-        blocking_drifts=blocking,
+        blocking_drifts=blocking_decisions,
     )
     if args.json_output:
         write_guard_report(report, args.json_output)

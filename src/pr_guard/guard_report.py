@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-from .drift import DriftItem
+from .drift import BlockingDriftDecision, DriftItem
 
 SCHEMA_VERSION = 1
 PASS = "pass"
@@ -20,7 +20,7 @@ def build_guard_report(
     actionable_drifts: Iterable[DriftItem],
     fix_prs: Iterable[tuple[DriftItem, int] | dict[str, Any]],
     suppressed: dict[str, int] | None = None,
-    blocking_drifts: Iterable[DriftItem] | None = None,
+    blocking_drifts: Iterable[DriftItem | BlockingDriftDecision | dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the stable JSON-serializable report emitted by the CI gate.
 
@@ -38,7 +38,7 @@ def build_guard_report(
       - ``pass`` otherwise (including advisory-only drift with no fix PRs).
     """
     drift_items = list(actionable_drifts)
-    block_items = list(blocking_drifts) if blocking_drifts is not None else []
+    block_items = [_normalize_blocking_drift(item) for item in (blocking_drifts or [])]
     fix_items = [_normalize_fix_pr(item) for item in fix_prs]
     drift_count = len(drift_items)
     blocking_count = len(block_items)
@@ -54,6 +54,7 @@ def build_guard_report(
         "blocking_count": blocking_count,
         "fix_pr_count": fix_pr_count,
         "drifts": [d.to_dict() for d in drift_items],
+        "blocking_drifts": block_items,
         "fix_prs": fix_items,
         "suppressed": _normalize_suppressed(suppressed),
         "summary": _summary(
@@ -98,6 +99,29 @@ def _normalize_fix_pr(item: tuple[DriftItem, int] | dict[str, Any]) -> dict[str,
     return {"pr_number": pr_number, "drift": drift.to_dict()}
 
 
+def _normalize_blocking_drift(
+    item: DriftItem | BlockingDriftDecision | dict[str, Any],
+) -> dict[str, Any]:
+    if isinstance(item, BlockingDriftDecision):
+        return item.to_dict()
+    if isinstance(item, DriftItem):
+        return {
+            "drift": item.to_dict(),
+            "reason": "",
+            "source": "unknown",
+        }
+    if isinstance(item, dict):
+        drift = item.get("drift")
+        if isinstance(drift, DriftItem):
+            drift = drift.to_dict()
+        return {
+            "drift": drift,
+            "reason": str(item.get("reason") or ""),
+            "source": str(item.get("source") or "unknown"),
+        }
+    return {"drift": None, "reason": "", "source": "unknown"}
+
+
 def _normalize_suppressed(suppressed: dict[str, int] | None) -> dict[str, int]:
     suppressed = suppressed or {}
     return {
@@ -109,7 +133,10 @@ def _normalize_suppressed(suppressed: dict[str, int] | None) -> dict[str, int]:
 def _summary(verdict: str, *, drift_count: int, blocking_count: int, fix_pr_count: int) -> str:
     if verdict == NEEDS_FIX_REVIEW:
         noun = "fix PR" if fix_pr_count == 1 else "fix PRs"
-        return f"{drift_count} drift item(s) detected; {fix_pr_count} {noun} ready/reused for review."
+        return (
+            f"{drift_count} drift item(s) detected; "
+            f"{fix_pr_count} {noun} ready/reused for review."
+        )
     if verdict == FAIL:
         return f"{blocking_count} blocking drift item(s) detected; no fix PRs were created."
     if drift_count > 0:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from pr_guard.drift import DriftItem
+from pr_guard.drift import BlockingDriftDecision, DriftItem
 from pr_guard.guard_report import build_guard_report, write_guard_report
 
 
@@ -92,7 +92,34 @@ def test_report_fails_when_blocking_drift_remains_without_fix_prs() -> None:
     assert report["verdict"] == "fail"
     assert report["drift_count"] == 2
     assert report["blocking_count"] == 2
+    assert report["blocking_drifts"][0]["drift"] == blockers[0].to_dict()
     assert "2 blocking drift" in report["summary"]
+
+
+def test_report_preserves_blocking_reason() -> None:
+    drift = _drift()
+    report = build_guard_report(
+        repo="octo/app",
+        pr_number=12,
+        actionable_drifts=[drift],
+        fix_prs=[],
+        suppressed={"unrelated": 0, "non_goal": 0},
+        blocking_drifts=[
+            BlockingDriftDecision(
+                drift=drift,
+                reason="Scoped auth code changed but audit logging is still absent.",
+            )
+        ],
+    )
+
+    assert report["verdict"] == "fail"
+    assert report["blocking_drifts"] == [
+        {
+            "drift": drift.to_dict(),
+            "reason": "Scoped auth code changed but audit logging is still absent.",
+            "source": "semantic",
+        }
+    ]
 
 
 def test_report_summary_describes_reused_fix_pr_without_claiming_creation() -> None:

@@ -12,7 +12,7 @@ from typing import Any, Mapping, Optional, Protocol
 
 import httpx
 
-from .drift import DriftItem
+from .drift import BlockingDriftDecision, DriftItem
 from .patcher import (
     DEFAULT_MODEL,
     PatchProposal,
@@ -50,7 +50,7 @@ class LLMProvider(Protocol):
         advisory: list[DriftItem],
         *,
         diff_summary: str | None = None,
-    ) -> list[DriftItem]: ...
+    ) -> list[BlockingDriftDecision]: ...
 
 
 class HttpClient(Protocol):
@@ -121,7 +121,7 @@ class AnthropicProvider:
         advisory: list[DriftItem],
         *,
         diff_summary: str | None = None,
-    ) -> list[DriftItem]:
+    ) -> list[BlockingDriftDecision]:
         if not advisory:
             return []
         resp = _call_blocking_classifier(
@@ -228,7 +228,7 @@ class HermesWebhookProvider:
         advisory: list[DriftItem],
         *,
         diff_summary: str | None = None,
-    ) -> list[DriftItem]:
+    ) -> list[BlockingDriftDecision]:
         if not advisory:
             return []
         data = self._post(
@@ -353,12 +353,22 @@ def _call_blocking_classifier(
     )
 
 
-def _select_blocking_from_response(data: Any, advisory: list[DriftItem]) -> list[DriftItem]:
-    indexes = _parse_blocking_indexes(data, item_count=len(advisory))
-    return [advisory[index] for index in indexes]
+def _select_blocking_from_response(
+    data: Any,
+    advisory: list[DriftItem],
+) -> list[BlockingDriftDecision]:
+    decisions = _parse_blocking_decisions(data, item_count=len(advisory))
+    return [
+        BlockingDriftDecision(
+            drift=advisory[index],
+            reason=reason,
+            source="semantic",
+        )
+        for index, reason in decisions
+    ]
 
 
-def _parse_blocking_indexes(data: Any, *, item_count: int) -> list[int]:
+def _parse_blocking_decisions(data: Any, *, item_count: int) -> list[tuple[int, str]]:
     if not item_count:
         return []
 
@@ -398,20 +408,27 @@ def _parse_blocking_indexes(data: Any, *, item_count: int) -> list[int]:
     if not isinstance(entries, list):
         return []
 
-    indexes: list[int] = []
+    decisions: list[tuple[int, str]] = []
     for entry in entries:
         index: int | None = None
+        reason = ""
         if isinstance(entry, int):
             index = entry
         elif isinstance(entry, dict):
             raw_index = entry.get("index")
             if isinstance(raw_index, int):
                 index = raw_index
+            reason = str(entry.get("reason") or entry.get("evidence") or "").strip()
             decision = str(entry.get("decision", "blocking")).lower()
             if decision not in {"blocking", "block", "true", "yes"}:
                 index = None
 
-        if index is None or index < 0 or index >= item_count or index in indexes:
+        if (
+            index is None
+            or index < 0
+            or index >= item_count
+            or any(existing == index for existing, _ in decisions)
+        ):
             continue
-        indexes.append(index)
-    return indexes
+        decisions.append((index, reason or "Classified as blocking by semantic provider."))
+    return decisions

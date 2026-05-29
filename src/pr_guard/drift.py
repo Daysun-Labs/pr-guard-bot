@@ -14,6 +14,7 @@ generation can cite the exact PRD/SEED line.
 
 from __future__ import annotations
 
+from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass, asdict
 from typing import Any, Iterable
 
@@ -55,6 +56,22 @@ class DriftItem:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class BlockingDriftDecision:
+    """High-confidence decision that an advisory drift item should block CI."""
+
+    drift: DriftItem
+    reason: str
+    source: str = "semantic"
+
+    def to_dict(self) -> dict:
+        return {
+            "drift": self.drift.to_dict(),
+            "reason": self.reason,
+            "source": self.source,
+        }
 
 
 def detect_drift(
@@ -124,6 +141,29 @@ def select_blocking_drift(
     provider: Any | None = None,
     diff_summary: str | None = None,
 ) -> list[DriftItem]:
+    """Return only the drift items that should block CI.
+
+    Use :func:`select_blocking_drift_decisions` when reason/source provenance is
+    needed for reports or comments.
+    """
+    return [
+        decision.drift
+        for decision in select_blocking_drift_decisions(
+            advisory,
+            fail_on_advisory=fail_on_advisory,
+            provider=provider,
+            diff_summary=diff_summary,
+        )
+    ]
+
+
+def select_blocking_drift_decisions(
+    advisory: Iterable[DriftItem],
+    *,
+    fail_on_advisory: bool = False,
+    provider: Any | None = None,
+    diff_summary: str | None = None,
+) -> list[BlockingDriftDecision]:
     """Return the drift items that should *block* CI (fail the check).
 
     This is deliberately separate from ``filter_actionable_drift``. The static
@@ -155,7 +195,14 @@ def select_blocking_drift(
     """
     items = list(advisory)
     if fail_on_advisory:
-        return items
+        return [
+            BlockingDriftDecision(
+                drift=item,
+                reason="Promoted by --fail-on-advisory-drift strict mode.",
+                source="strict_advisory",
+            )
+            for item in items
+        ]
     if not items or provider is None:
         return []
 
@@ -167,7 +214,34 @@ def select_blocking_drift(
         blocking = classifier(items, diff_summary=diff_summary)
     except Exception:
         return []
-    return [item for item in blocking if isinstance(item, DriftItem)]
+    return _normalize_blocking_decisions(blocking)
+
+
+def _normalize_blocking_decisions(result: Any) -> list[BlockingDriftDecision]:
+    decisions: list[BlockingDriftDecision] = []
+    if isinstance(result, (str, bytes)) or not isinstance(result, IterableABC):
+        return decisions
+
+    for entry in result:
+        if isinstance(entry, BlockingDriftDecision):
+            decisions.append(entry)
+        elif isinstance(entry, DriftItem):
+            decisions.append(
+                BlockingDriftDecision(
+                    drift=entry,
+                    reason="Classified as blocking by semantic provider.",
+                    source="semantic",
+                )
+            )
+        elif isinstance(entry, dict) and isinstance(entry.get("drift"), DriftItem):
+            decisions.append(
+                BlockingDriftDecision(
+                    drift=entry["drift"],
+                    reason=str(entry.get("reason") or "Classified as blocking."),
+                    source=str(entry.get("source") or "semantic"),
+                )
+            )
+    return decisions
 
 
 def _to_drift_item(m: MatchResult) -> DriftItem:

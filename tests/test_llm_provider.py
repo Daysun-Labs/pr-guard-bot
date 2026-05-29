@@ -131,7 +131,8 @@ def test_hermes_blocking_classifier_posts_advisory_context_and_parses_indexes() 
 
     blocking = provider.classify_blocking_drift([drift], diff_summary="FILE src/app.py")
 
-    assert blocking == [drift]
+    assert [decision.drift for decision in blocking] == [drift]
+    assert blocking[0].reason == "real missing flow"
     request_json = http.requests[0]["json"]
     assert request_json["task"] == "blocking_drift_classification"
     assert request_json["schema_version"] == "pr-guard.blocking-drift/v1"
@@ -159,7 +160,8 @@ def test_anthropic_blocking_classifier_parses_json_response() -> None:
 
     blocking = provider.classify_blocking_drift([first, second], diff_summary="FILE src/app.py")
 
-    assert blocking == [second]
+    assert [decision.drift for decision in blocking] == [second]
+    assert blocking[0].reason == "Classified as blocking by semantic provider."
     user_payload = json.loads(client.messages.requests[0]["messages"][0]["content"])
     assert user_payload["schema_version"] == "pr-guard.blocking-drift/v1"
     assert user_payload["advisory_drifts"][1]["index"] == 1
