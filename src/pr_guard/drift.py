@@ -133,10 +133,14 @@ def select_blocking_drift(
     (dependency bumps, workflow edits) that merely share vocabulary with a spec
     line. Blocking on it produces frequent false-positive CI failures.
 
-    So by default nothing here is blocking — advisory drift is surfaced in the
-    PR comment and JSON report for humans, but the check stays green. A
-    high-confidence source (a semantic/LLM oracle) is the intended producer of
-    genuinely blocking drift; this function is the seam where it plugs in.
+    Advisory drift is now scope-aware (token-coverage evidence is credited only
+    to code changes — see ``spec_matcher``), so doc/config-only PRs no longer
+    manufacture drift. But the remaining advisory signal is still token-coverage
+    based and clusters at the matcher band, so by default nothing here is
+    blocking — advisory drift is surfaced in the PR comment and JSON report for
+    humans, but the check stays green. A high-confidence source (a semantic/LLM
+    oracle) is the intended producer of genuinely blocking drift; this function
+    is the seam where it plugs in.
 
     Set ``fail_on_advisory`` to opt back into the legacy strict behaviour where
     every advisory item blocks the check.

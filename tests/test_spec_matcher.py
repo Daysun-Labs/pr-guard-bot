@@ -59,13 +59,14 @@ def test_satisfied_via_symbol_name():
 
 
 def test_satisfied_via_changed_text_tokens():
+    # Token-coverage evidence comes from code changes (here a .py file).
     diff = parse_unified_diff(
         """\
-diff --git a/README.md b/README.md
---- a/README.md
-+++ b/README.md
+diff --git a/src/app/notify.py b/src/app/notify.py
+--- a/src/app/notify.py
++++ b/src/app/notify.py
 @@ -1,2 +1,3 @@
-+Slack incoming webhook notification is sent within five minutes.
++# Slack incoming webhook notification is sent within five minutes.
 """
     )
     req = _req("Send Slack incoming webhook notification within five minutes")
@@ -80,6 +81,25 @@ diff --git a/README.md b/README.md
         "five",
         "minutes",
     }
+
+
+def test_doc_only_change_yields_no_token_evidence():
+    # The same prose in a docs file must NOT count as implementing the
+    # requirement — this is the scope rule that kills doc/config-PR noise.
+    diff = parse_unified_diff(
+        """\
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1,2 +1,3 @@
++Slack incoming webhook notification is sent within five minutes.
+"""
+    )
+    req = _req("Send Slack incoming webhook notification within five minutes")
+    report = match_requirements([req], diff)
+    assert not report.satisfied
+    assert report.unmet[0].score == 0.0
+    assert report.unmet[0].evidence.matched_tokens == []
 
 
 def test_unmet_when_diff_unrelated():
