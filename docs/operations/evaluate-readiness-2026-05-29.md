@@ -18,6 +18,13 @@ internals.
   - Focused evidence suite covering latency, comments/reports, Hermes provider,
     fix PR routing, adapter validation, onboarding, public workflow safety, and
     semantic blocking -> 92 passed.
+- Live Hermes proposal adapter smoke:
+  - Temporary validation PR #28 ran GitHub Actions against the configured
+    `HERMES_PR_GUARD_WEBHOOK_URL` / token secrets.
+  - Actions run `26617431606` returned valid `update` JSON shapes for both
+    `adapter/examples/code_fix.request.json` and
+    `adapter/examples/seed_fix.request.json`.
+  - The temporary PR was closed without merge after validation.
 - Known warning: `StarletteDeprecationWarning` from `fastapi.testclient`; it does
   not fail the suite.
 
@@ -56,8 +63,8 @@ Status labels:
 | --- | --- | --- |
 | 1. PR event produces PR Guard check + Slack within 5 minutes | `proven` | PR #26 Actions run completed successfully in 25 seconds; PR Guard comment posted; Slack delivery operator-confirmed. Unit coverage: `tests/test_e2e_latency.py`. |
 | 2. Advisory drift creates comment + JSON but is non-blocking by default; blocking drift fails | `proven` / `test-proven` | `tests/test_main_cli_gate.py`, `tests/test_guard_report.py`, `tests/test_comment_format.py`, `tests/test_publish.py`, and PR #26 comment showing stable marker report. |
-| 3. PRD drift can generate Hermes code-fix proposal | `test-proven` / `approval-gated` | `tests/test_llm_provider.py::test_hermes_code_fix_posts_context_and_parses_nested_proposal`, `tests/test_fix_pr.py::test_prd_drift_routes_to_code_fix_branch_prefix`, `adapter/tests/test_service.py::test_code_fix_request_returns_validated_update_and_strict_prompt`, `adapter/tests/test_validators.py::test_code_fix_rejects_direct_source_patch_paths`. |
-| 4. SEED drift can generate Hermes seed-fix proposal | `test-proven` / `approval-gated` | `tests/test_llm_provider.py::test_hermes_seed_fix_posts_context_and_parses_update`, `tests/test_fix_pr.py::test_seed_fix_routes_to_seed_fix_branch_prefix`, `adapter/tests/test_validators.py::test_seed_fix_rejects_non_seed_drift_source`. |
+| 3. PRD drift can generate Hermes code-fix proposal | `proven` / `test-proven` / `approval-gated` | Live adapter smoke in Actions run `26617431606` returned valid `update` JSON for `adapter/examples/code_fix.request.json` without printing proposal content. Repo-side coverage: `tests/test_llm_provider.py::test_hermes_code_fix_posts_context_and_parses_nested_proposal`, `tests/test_fix_pr.py::test_prd_drift_routes_to_code_fix_branch_prefix`, `adapter/tests/test_service.py::test_code_fix_request_returns_validated_update_and_strict_prompt`, `adapter/tests/test_validators.py::test_code_fix_rejects_direct_source_patch_paths`. |
+| 4. SEED drift can generate Hermes seed-fix proposal | `proven` / `test-proven` / `approval-gated` | Live adapter smoke in Actions run `26617431606` returned valid `update` JSON for `adapter/examples/seed_fix.request.json` without printing proposal content. Repo-side coverage: `tests/test_llm_provider.py::test_hermes_seed_fix_posts_context_and_parses_update`, `tests/test_fix_pr.py::test_seed_fix_routes_to_seed_fix_branch_prefix`, `adapter/tests/test_validators.py::test_seed_fix_rejects_non_seed_drift_source`. |
 | 5. Repos without PRD/SEED get onboarding guidance | `test-proven` | `tests/test_onboarding_orchestrator.py` and `tests/test_onboarding_pr.py`. |
 | 6. 30-day adoption | `observing` | Tracking begins in `docs/operations/adoption-log.md`; this should not be claimed complete until the window is filled or the criterion is explicitly re-scoped. Future completion evidence should be a full 30-day log of relevant product PRs, check outcomes, and Slack delivery confirmations. |
 | 7. L1 static PR diff vs PRD/SEED oracle + structured JSON report | `test-proven` | `tests/test_spec_parser.py`, `tests/test_spec_matcher.py`, `tests/test_drift.py`, `tests/test_guard_report.py`, `tests/test_semantic_blocking_eval.py`, and `tools/replay_pr_guard_history.py`. |
