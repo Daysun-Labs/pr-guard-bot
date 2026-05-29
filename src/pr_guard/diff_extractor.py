@@ -34,6 +34,12 @@ class FileDiff:
     symbols: list[str] = field(default_factory=list)
     hunks: list[dict[str, Any]] = field(default_factory=list)
     changed_text: str = ""
+    # Added (post-image) lines and the symbols defined/touched on them. The
+    # spec matcher uses these — not removed lines — as evidence that a PR
+    # *implements* a requirement, so deleting code that mentions a requirement
+    # never counts as satisfying it.
+    added_text: str = ""
+    added_symbols: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -49,6 +55,16 @@ class NormalizedDiff:
         seen: list[str] = []
         for f in self.files:
             for s in f.symbols:
+                if s not in seen:
+                    seen.append(s)
+        return seen
+
+    @property
+    def added_symbols(self) -> list[str]:
+        """Symbols defined/touched on added lines (and hunk headers) only."""
+        seen: list[str] = []
+        for f in self.files:
+            for s in f.added_symbols:
                 if s not in seen:
                     seen.append(s)
         return seen
@@ -75,7 +91,9 @@ def parse_unified_diff(diff_text: str) -> NormalizedDiff:
     current: FileDiff | None = None
     current_hunk: dict[str, Any] | None = None
     symbol_set: set[str] = set()
+    added_symbol_set: set[str] = set()
     changed_lines: list[str] = []
+    added_lines_text: list[str] = []
 
     lines = diff_text.splitlines()
     i = 0
@@ -86,10 +104,14 @@ def parse_unified_diff(diff_text: str) -> NormalizedDiff:
             # finalize previous
             if current is not None:
                 current.symbols = sorted(symbol_set)
+                current.added_symbols = sorted(added_symbol_set)
                 current.changed_text = "\n".join(changed_lines)
+                current.added_text = "\n".join(added_lines_text)
                 files.append(current)
             symbol_set = set()
+            added_symbol_set = set()
             changed_lines = []
+            added_lines_text = []
             current_hunk = None
             a_path, b_path = m.group(1), m.group(2)
             current = FileDiff(
@@ -131,17 +153,20 @@ def parse_unified_diff(diff_text: str) -> NormalizedDiff:
                 sym = _extract_symbol(header_tail)
                 if sym:
                     symbol_set.add(sym)
+                    added_symbol_set.add(sym)
             i += 1
             continue
 
         if line.startswith("+") and not line.startswith("+++"):
             changed_lines.append(line[1:])
+            added_lines_text.append(line[1:])
             current.added_lines += 1
             if current_hunk is not None:
                 current_hunk["added"] += 1
             sym = _extract_symbol(line[1:])
             if sym:
                 symbol_set.add(sym)
+                added_symbol_set.add(sym)
         elif line.startswith("-") and not line.startswith("---"):
             changed_lines.append(line[1:])
             current.removed_lines += 1
@@ -154,7 +179,9 @@ def parse_unified_diff(diff_text: str) -> NormalizedDiff:
 
     if current is not None:
         current.symbols = sorted(symbol_set)
+        current.added_symbols = sorted(added_symbol_set)
         current.changed_text = "\n".join(changed_lines)
+        current.added_text = "\n".join(added_lines_text)
         files.append(current)
 
     return NormalizedDiff(files=files)

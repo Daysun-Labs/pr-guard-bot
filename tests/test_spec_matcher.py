@@ -125,6 +125,56 @@ def test_threshold_controls_token_match():
     assert (len(loose.satisfied) + len(loose.unmet)) == 1
 
 
+def test_subword_match_keeps_real_identifier_hits():
+    # "webhook" must still match the identifier "send_slack_webhook".
+    diff = parse_unified_diff(
+        """\
+diff --git a/x.py b/x.py
+--- a/x.py
++++ b/x.py
+@@ -1 +1,2 @@
++def send_slack_webhook(url):
+"""
+    )
+    report = match_requirements([_req("Slack webhook must be sent")], diff)
+    matched = (report.satisfied or report.unmet)[0].evidence.matched_tokens
+    assert {"slack", "webhook"} <= set(matched)
+
+
+def test_no_substring_collision_on_short_tokens():
+    # "pr"/"ci"/"io" must NOT match "print" — they are not whole subwords of it.
+    diff = parse_unified_diff(
+        """\
+diff --git a/y.py b/y.py
+--- a/y.py
++++ b/y.py
+@@ -1 +1,2 @@
++    print(value)
+"""
+    )
+    report = match_requirements([_req("pr ci io")], diff)
+    result = (report.satisfied or report.unmet)[0]
+    assert result.evidence.matched_tokens == []
+    assert result.score == 0.0
+
+
+def test_deleted_symbol_is_not_evidence():
+    # Removing a definition must not satisfy a requirement that names it.
+    diff = parse_unified_diff(
+        """\
+diff --git a/z.py b/z.py
+--- a/z.py
++++ b/z.py
+@@ -1,2 +1 @@
+-def process_webhook(payload):
+ keep = 1
+"""
+    )
+    report = match_requirements([_req("process_webhook handler must exist")], diff)
+    assert not report.satisfied
+    assert report.unmet[0].evidence.matched_symbols == []
+
+
 def test_result_serialization_roundtrip():
     diff = parse_unified_diff(SAMPLE_DIFF)
     req = _req("Add match_requirements function")

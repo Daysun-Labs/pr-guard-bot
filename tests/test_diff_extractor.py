@@ -133,3 +133,23 @@ def test_to_dict_serializable():
     d = nd.to_dict()
     assert d["files"][0]["path"] == "src/pkg/bar.py"
     assert d["files"][0]["change_type"] == "added"
+
+
+def test_added_text_excludes_removed_lines():
+    nd = parse_unified_diff(MODIFY_PY_DIFF)
+    added = nd.files[0].added_text
+    assert "new_helper" in added
+    assert "another" in added
+    # The removed definition must not appear as added evidence.
+    assert "old_helper" not in added
+    # changed_text still carries both sides for backward compatibility.
+    assert "old_helper" in nd.files[0].changed_text
+
+
+def test_added_symbols_excludes_deleted_symbols():
+    nd = parse_unified_diff(MODIFY_PY_DIFF)
+    assert "new_helper" in nd.added_symbols
+    assert "another" in nd.added_symbols
+    assert "old_helper" not in nd.added_symbols
+    # all_symbols still tracks the deleted symbol.
+    assert "old_helper" in nd.all_symbols
