@@ -4,7 +4,8 @@
 - **Branch:** `claude/youthful-leakey-532f58`
 - **Status:** #1-#3, #5 cleanup, repo-side semantic blocking, reason
   provenance, semantic eval fixtures, replay tooling, adapter handler support,
-  and live Actions smoke are shipped. Remaining work is deployment/ops rollout.
+  live Actions smoke, and live Hermes adapter smoke are shipped. Remaining work
+  is ongoing semantic eval expansion as real PR examples appear.
 
 ## TL;DR
 
@@ -100,6 +101,9 @@ failures remain 0, and every chore/docs-only PR remains clean in all modes.
   empty advisory input.
 - Live GitHub Actions `workflow_dispatch` was triggered on this branch and
   completed successfully on GitHub-hosted runners.
+- Live Hermes adapter rollout was verified on `hermes-ds-pr-guard-adapter.service`
+  at commit `cb56a9f51bb66549ce6943ddd8d63d07561b0c5d` with an authenticated
+  loopback `blocking_drift_classification` smoke returning `{"blocking":[]}`.
 
 ## Current Behavior Contract
 
@@ -140,14 +144,7 @@ PYTHONPATH=src python tools/replay_pr_guard_history.py --commits 12
 
 ## Remaining Work
 
-### A. Deployment/Ops Rollout
-
-Deploy or restart the actual Hermes adapter service with this branch's
-`blocking_drift_classification` support, then verify a real authenticated
-adapter request. This is operational work and should keep the existing approval
-boundaries for service restarts, secrets, and production configuration.
-
-### B. Expand Semantic Eval Coverage
+### A. Expand Semantic Eval Coverage
 
 Add more gold cases as real PR examples appear: intentional spec updates,
 renames, touched-but-unrelated code, and true missing-requirement code changes.
@@ -158,8 +155,9 @@ renames, touched-but-unrelated code, and true missing-requirement code changes.
 > `claude/youthful-leakey-532f58`. Repo-side #1-#3, #5 cleanup, semantic
 > blocking provider seam, blocking reason provenance, semantic eval fixtures,
 > replay tooling, adapter handler support, and live workflow-dispatch smoke are
-> done. Next, plan the deployment/ops rollout for the Hermes adapter service and
-> verify a real authenticated `blocking_drift_classification` request. Keep the
+> done. Live Hermes adapter rollout and authenticated
+> `blocking_drift_classification` loopback smoke are also done. Next, expand
+> semantic eval coverage only when real PR examples appear. Keep the
 > conservative policy: no provider/uncertainty -> no blocking -> CI green.
 > Verify repo changes with `PYTHONPATH=src pytest tests/ -q`,
 > `PYTHONPATH=src pytest -v`, and
