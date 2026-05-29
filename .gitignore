@@ -13,6 +13,11 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.ouroboros/
+.ouroboros_eval_artifact.md
+
+# Local agent state
+completed.yaml
 
 # Editors
 .vscode/
