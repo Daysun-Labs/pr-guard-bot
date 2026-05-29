@@ -2,10 +2,13 @@
 
 - **Date:** 2026-05-29
 - **Branch:** `claude/youthful-leakey-532f58`
+- **Merged:** PR #24 into `main`
+  (`4e8443582f3f1f726199434b7afc056351deac3b`)
 - **Status:** #1-#3, #5 cleanup, repo-side semantic blocking, reason
   provenance, semantic eval fixtures, replay tooling, adapter handler support,
-  live Actions smoke, and live Hermes adapter smoke are shipped. Remaining work
-  is ongoing semantic eval expansion as real PR examples appear.
+  live Actions smoke, live Hermes adapter smoke, and post-merge main adapter
+  smoke are shipped. Remaining work is tracked in issue #25 for semantic eval
+  expansion as real PR examples appear.
 
 ## TL;DR
 
@@ -101,9 +104,10 @@ failures remain 0, and every chore/docs-only PR remains clean in all modes.
   empty advisory input.
 - Live GitHub Actions `workflow_dispatch` was triggered on this branch and
   completed successfully on GitHub-hosted runners.
-- Live Hermes adapter rollout was verified on `hermes-ds-pr-guard-adapter.service`
-  at commit `cb56a9f51bb66549ce6943ddd8d63d07561b0c5d` with an authenticated
-  loopback `blocking_drift_classification` smoke returning `{"blocking":[]}`.
+- Live Hermes adapter rollout was verified first on branch commit
+  `cb56a9f51bb66549ce6943ddd8d63d07561b0c5d`, then again after merge on `main`
+  at `4e8443582f3f1f726199434b7afc056351deac3b`. Both authenticated
+  `blocking_drift_classification` smokes returned `{"blocking":[]}`.
 
 ## Current Behavior Contract
 
@@ -148,16 +152,16 @@ PYTHONPATH=src python tools/replay_pr_guard_history.py --commits 12
 
 Add more gold cases as real PR examples appear: intentional spec updates,
 renames, touched-but-unrelated code, and true missing-requirement code changes.
+Tracked in issue #25.
 
 ## Next-Session Prompt
 
-> Continue the PR-guard drift false-positive remediation on branch
-> `claude/youthful-leakey-532f58`. Repo-side #1-#3, #5 cleanup, semantic
-> blocking provider seam, blocking reason provenance, semantic eval fixtures,
-> replay tooling, adapter handler support, and live workflow-dispatch smoke are
-> done. Live Hermes adapter rollout and authenticated
-> `blocking_drift_classification` loopback smoke are also done. Next, expand
-> semantic eval coverage only when real PR examples appear. Keep the
+> Continue the PR-guard drift false-positive remediation on `main`. PR #24 is
+> merged, repo-side #1-#3, #5 cleanup, semantic blocking
+> provider seam, blocking reason provenance, semantic eval fixtures, replay
+> tooling, adapter handler support, live workflow-dispatch smoke, and
+> authenticated live adapter smoke are done. Next, expand semantic eval coverage
+> only when real PR examples appear; use issue #25 as the tracker. Keep the
 > conservative policy: no provider/uncertainty -> no blocking -> CI green.
 > Verify repo changes with `PYTHONPATH=src pytest tests/ -q`,
 > `PYTHONPATH=src pytest -v`, and
