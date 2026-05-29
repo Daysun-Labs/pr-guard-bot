@@ -21,7 +21,7 @@ constraints:
 
 acceptance_criteria:
   - 임의 리포의 pull_request opened/synchronize 이벤트 → 5분 내 PR Guard GitHub Actions check와 Slack 알림 도착
-  - PRD/SEED 대비 actionable drift ≥1건 감지 시 PR 코멘트 + pr-guard-report.json + fail-on-drift 실패가 일관됨
+  - PRD/SEED 대비 advisory drift 감지 시 PR 코멘트 + pr-guard-report.json이 일관되게 생성되되, 정적 토큰 매칭 부분일치는 기본적으로 non-blocking(advisory)이고 blocking drift(또는 --fail-on-advisory-drift opt-in)에서만 fail-on-drift가 실패함
   - drift가 PRD(의도)와 어김이면 Hermes provider가 code-fix 수정 PR 제안을 생성할 수 있음
   - drift가 SEED(구현 명세)와 어김이면 Hermes provider가 seed-fix 수정 PR 제안을 생성할 수 있음
   - PRD/SEED 없는 리포는 onboarding 안내 코멘트 또는 안내 PR 생성
@@ -91,7 +91,7 @@ exit_conditions:
     criteria: 임의 리포 PR에 5분 내 Slack 알림 + 코멘트 + pr-guard-report.json 생성
   - name: enforced_gate
     description: Required Check로 사용 가능
-    criteria: --fail-on-drift가 actionable drift 존재 시 실패하고 drift_count=0이면 통과
+    criteria: --fail-on-drift가 blocking drift(blocking_count≥1) 존재 시 실패하고, blocking이 없으면(advisory만 있어도) 통과. --fail-on-advisory-drift로 advisory를 blocking으로 승격 가능
   - name: classified_fix
     description: 분류 정확
     criteria: PRD 위반 → code-fix PR, SEED 위반 → seed-fix PR 자동 분류 동작

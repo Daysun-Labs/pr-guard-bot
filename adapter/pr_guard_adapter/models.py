@@ -83,3 +83,34 @@ class ProposalRequest(BaseModel):
         """Return compact JSON-serializable context for the Hermes user prompt."""
 
         return self.model_dump(exclude_none=True, mode="json")
+
+
+class BlockingDriftRequest(BaseModel):
+    """Validated request for semantic blocking drift classification."""
+
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: str | None = None
+    task: str
+    metadata: Metadata = Field(default_factory=Metadata)
+    advisory_drifts: list[DriftPayload]
+    diff_summary: str = ""
+    decision_shape: dict[str, Any] | None = None
+
+    @field_validator("task")
+    @classmethod
+    def _task_non_empty(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("task must be non-empty")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_task(self) -> "BlockingDriftRequest":
+        if self.task != "blocking_drift_classification":
+            raise ValueError("BlockingDriftRequest requires blocking_drift_classification task")
+        return self
+
+    def prompt_payload(self) -> dict[str, Any]:
+        """Return compact JSON-serializable context for the Hermes user prompt."""
+
+        return self.model_dump(exclude_none=True, mode="json")

@@ -8,8 +8,13 @@ from typing import Protocol
 import httpx
 from pydantic import ValidationError
 
-from .models import ProposalRequest
-from .validators import parse_model_proposal, skip, validate_proposal
+from .models import BlockingDriftRequest, Metadata, ProposalRequest
+from .validators import (
+    parse_model_proposal,
+    skip,
+    validate_blocking_decision,
+    validate_proposal,
+)
 
 JsonObject = dict[str, object]
 
@@ -24,6 +29,22 @@ Rules:
 - Prefer skip over unsafe or speculative edits.
 - For seed_fix, output the full updated SEED.md and preserve unrelated text byte-for-byte.
 - For code_fix, output only a markdown proposal document, not source code patches.
+- Do not claim tests were run.
+"""
+
+BLOCKING_SYSTEM_PROMPT = """You are pr-guard's Hermes-side semantic blocking classifier.
+Return JSON only. Do not use markdown fences.
+You may return either:
+{"blocking":[{"index":0,"reason":"short evidence-based reason"}]}
+or:
+{"blocking":[]}
+
+Rules:
+- Only mark an item blocking when the diff is clearly scoped to that requirement
+  and the requirement is still genuinely missing or contradicted.
+- Do not block on docs/config-only changes, generic vocabulary overlap,
+  ambiguous requirements, malformed context, or insufficient evidence.
+- Prefer {"blocking":[]} whenever uncertain.
 - Do not claim tests were run.
 """
 
@@ -56,6 +77,7 @@ class AdapterConfig:
     max_body_bytes: int = 256_000
     max_seed_chars: int = 120_000
     max_repo_context_chars: int = 40_000
+    max_diff_summary_chars: int = 40_000
 
 
 class InMemoryIdempotencyCache:
@@ -133,6 +155,9 @@ class ProposalService:
         self.cache = cache
 
     def handle(self, payload: object, *, request_id: str | None = None) -> JsonObject:
+        if isinstance(payload, dict) and payload.get("task") == "blocking_drift_classification":
+            return self._handle_blocking_drift(payload, request_id=request_id)
+
         try:
             request = ProposalRequest.model_validate(payload)
         except ValidationError as exc:
@@ -173,6 +198,46 @@ class ProposalService:
             self.cache.set(cache_key, result)
         return result
 
+    def _handle_blocking_drift(
+        self,
+        payload: object,
+        *,
+        request_id: str | None = None,
+    ) -> JsonObject:
+        try:
+            request = BlockingDriftRequest.model_validate(payload)
+        except ValidationError:
+            return {"blocking": []}
+
+        if len(request.diff_summary) > self.config.max_diff_summary_chars:
+            return {"blocking": []}
+        if not request.advisory_drifts:
+            return {"blocking": []}
+
+        self._enforce_repo_allowlist_for_metadata(request.metadata)
+
+        cache_key = request_id or compute_blocking_idempotency_key(request, self.config)
+        if self.cache is not None:
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        try:
+            content = self.hermes_client.complete_json(build_blocking_messages(request))
+        except Exception:
+            result: JsonObject = {"blocking": []}
+        else:
+            try:
+                decision = parse_model_proposal(content)
+            except ValueError:
+                result = {"blocking": []}
+            else:
+                result = validate_blocking_decision(decision, request=request)
+
+        if self.cache is not None:
+            self.cache.set(cache_key, result)
+        return result
+
     def _validate_input_sizes(self, request: ProposalRequest) -> JsonObject | None:
         seed_too_large = (
             request.seed_md_text is not None
@@ -189,7 +254,10 @@ class ProposalService:
         return None
 
     def _enforce_repo_allowlist(self, request: ProposalRequest) -> None:
-        repo = request.metadata.repo or self.config.single_repo_mode
+        self._enforce_repo_allowlist_for_metadata(request.metadata)
+
+    def _enforce_repo_allowlist_for_metadata(self, metadata: Metadata) -> None:
+        repo = metadata.repo or self.config.single_repo_mode
         if repo is None:
             raise ForbiddenRequest(
                 "metadata.repo is required unless single_repo_mode is configured"
@@ -231,6 +299,23 @@ def build_messages(request: ProposalRequest) -> list[dict[str, str]]:
     ]
 
 
+def build_blocking_messages(request: BlockingDriftRequest) -> list[dict[str, str]]:
+    payload_json = json.dumps(
+        request.prompt_payload(), ensure_ascii=False, sort_keys=True, indent=2
+    )
+    return [
+        {"role": "system", "content": BLOCKING_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Task: blocking_drift_classification\n"
+                f"PR Guard request JSON:\n{payload_json}\n\n"
+                "Return JSON only."
+            ),
+        },
+    ]
+
+
 def compute_idempotency_key(request: ProposalRequest, config: AdapterConfig) -> str:
     metadata = request.metadata
     parts = [
@@ -241,6 +326,27 @@ def compute_idempotency_key(request: ProposalRequest, config: AdapterConfig) -> 
         request.drift.source_file or "",
         str(request.drift.line or ""),
         request.drift.quote,
+    ]
+    raw = "\0".join(parts).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def compute_blocking_idempotency_key(
+    request: BlockingDriftRequest,
+    config: AdapterConfig,
+) -> str:
+    metadata = request.metadata
+    drift_fingerprint = "|".join(
+        f"{drift.source_file or ''}:{drift.line or ''}:{drift.quote}"
+        for drift in request.advisory_drifts
+    )
+    parts = [
+        metadata.repo or config.single_repo_mode or "",
+        str(metadata.pr_number or ""),
+        metadata.head_sha or metadata.head_ref or "",
+        request.task,
+        drift_fingerprint,
+        request.diff_summary,
     ]
     raw = "\0".join(parts).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()

@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from .models import ProposalRequest
+from .models import BlockingDriftRequest, ProposalRequest
 
 JsonObject = dict[str, Any]
 
@@ -101,6 +101,51 @@ def validate_proposal(proposal: JsonObject, *, request: ProposalRequest) -> Json
         "message": message,
         "rationale": rationale,
     }
+
+
+def validate_blocking_decision(
+    decision: JsonObject,
+    *,
+    request: BlockingDriftRequest,
+) -> JsonObject:
+    """Return sanitized blocking classifier output for pr-guard-bot."""
+
+    entries = decision.get("blocking_indexes")
+    if entries is None:
+        entries = decision.get("blocking")
+    if entries is None and isinstance(decision.get("classification"), dict):
+        entries = decision["classification"].get("blocking")
+    if not isinstance(entries, list):
+        return {"blocking": []}
+
+    blocking: list[JsonObject] = []
+    seen: set[int] = set()
+    item_count = len(request.advisory_drifts)
+    for entry in entries:
+        index: int | None = None
+        reason = ""
+        if isinstance(entry, int):
+            index = entry
+        elif isinstance(entry, dict):
+            raw_index = entry.get("index")
+            if isinstance(raw_index, int):
+                index = raw_index
+            decision_value = str(entry.get("decision", "blocking")).lower()
+            if decision_value not in {"blocking", "block", "true", "yes"}:
+                index = None
+            reason = str(entry.get("reason") or entry.get("evidence") or "")
+
+        if index is None or index < 0 or index >= item_count or index in seen:
+            continue
+        seen.add(index)
+        blocking.append(
+            {
+                "index": index,
+                "reason": _clean_reason(reason or "Classified as blocking by Hermes."),
+            }
+        )
+
+    return {"blocking": blocking}
 
 
 def _validate_seed_fix(new_content: str, request: ProposalRequest) -> JsonObject | None:

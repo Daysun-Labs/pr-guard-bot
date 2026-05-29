@@ -39,6 +39,7 @@ def test_includes_header_and_summary_count():
     assert "Found **2** drift finding" in body
     assert "**high**: 1" in body
     assert "**medium**: 1" in body
+    assert "Classifier: `spec-violation`: 2" in body
 
 
 def test_groups_by_source_prd_and_seed():
@@ -55,6 +56,7 @@ def test_groups_by_source_prd_and_seed():
 def test_quote_and_location_rendered():
     body = format_drift_comment([_drift(source_file="PRD.md", line=99, quote="must verify HMAC")])
     assert "`PRD.md:99`" in body
+    assert "`spec-violation`" in body
     assert "> must verify HMAC" in body
 
 

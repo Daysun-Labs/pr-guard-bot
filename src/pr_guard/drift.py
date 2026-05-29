@@ -14,8 +14,9 @@ generation can cite the exact PRD/SEED line.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict, field
-from typing import Iterable
+from collections.abc import Iterable as IterableABC
+from dataclasses import dataclass, asdict
+from typing import Any, Iterable
 
 from .diff_extractor import NormalizedDiff
 from .spec_matcher import MatchResult, match_requirements
@@ -55,6 +56,22 @@ class DriftItem:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class BlockingDriftDecision:
+    """High-confidence decision that an advisory drift item should block CI."""
+
+    drift: DriftItem
+    reason: str
+    source: str = "semantic"
+
+    def to_dict(self) -> dict:
+        return {
+            "drift": self.drift.to_dict(),
+            "reason": self.reason,
+            "source": self.source,
+        }
 
 
 def detect_drift(
@@ -115,6 +132,116 @@ def filter_actionable_drift(
             continue
         actionable.append(d)
     return actionable, suppressed
+
+
+def select_blocking_drift(
+    advisory: Iterable[DriftItem],
+    *,
+    fail_on_advisory: bool = False,
+    provider: Any | None = None,
+    diff_summary: str | None = None,
+) -> list[DriftItem]:
+    """Return only the drift items that should block CI.
+
+    Use :func:`select_blocking_drift_decisions` when reason/source provenance is
+    needed for reports or comments.
+    """
+    return [
+        decision.drift
+        for decision in select_blocking_drift_decisions(
+            advisory,
+            fail_on_advisory=fail_on_advisory,
+            provider=provider,
+            diff_summary=diff_summary,
+        )
+    ]
+
+
+def select_blocking_drift_decisions(
+    advisory: Iterable[DriftItem],
+    *,
+    fail_on_advisory: bool = False,
+    provider: Any | None = None,
+    diff_summary: str | None = None,
+) -> list[BlockingDriftDecision]:
+    """Return the drift items that should *block* CI (fail the check).
+
+    This is deliberately separate from ``filter_actionable_drift``. The static
+    matcher only produces *advisory* drift — token-coverage partial matches
+    sitting just below the matcher threshold (see ``ACTIONABLE_SCORE_FLOOR``).
+    That signal is far too noisy to fail a required check on: a token-coverage
+    score lands in the actionable band only when ~1/3 of a requirement's tokens
+    happen to appear as substrings of the diff, which fires on unrelated chores
+    (dependency bumps, workflow edits) that merely share vocabulary with a spec
+    line. Blocking on it produces frequent false-positive CI failures.
+
+    Advisory drift is now scope-aware (token-coverage evidence is credited only
+    to code changes — see ``spec_matcher``), so doc/config-only PRs no longer
+    manufacture drift. But the remaining advisory signal is still token-coverage
+    based and clusters at the matcher band, so by default nothing here is
+    blocking — advisory drift is surfaced in the PR comment and JSON report for
+    humans, but the check stays green. A high-confidence source (a semantic/LLM
+    oracle) is the intended producer of genuinely blocking drift; this function
+    is the seam where it plugs in.
+
+    When an LLM/Hermes provider is supplied, it may promote scoped advisory
+    findings to blocking drift via ``classify_blocking_drift``. Provider absence,
+    provider implementations without that method, and provider errors all
+    degrade to no blocking drift so CI stays green unless there is an explicit
+    high-confidence blocking signal.
+
+    Set ``fail_on_advisory`` to opt back into the legacy strict behaviour where
+    every advisory item blocks the check.
+    """
+    items = list(advisory)
+    if fail_on_advisory:
+        return [
+            BlockingDriftDecision(
+                drift=item,
+                reason="Promoted by --fail-on-advisory-drift strict mode.",
+                source="strict_advisory",
+            )
+            for item in items
+        ]
+    if not items or provider is None:
+        return []
+
+    classifier = getattr(provider, "classify_blocking_drift", None)
+    if not callable(classifier):
+        return []
+
+    try:
+        blocking = classifier(items, diff_summary=diff_summary)
+    except Exception:
+        return []
+    return _normalize_blocking_decisions(blocking)
+
+
+def _normalize_blocking_decisions(result: Any) -> list[BlockingDriftDecision]:
+    decisions: list[BlockingDriftDecision] = []
+    if isinstance(result, (str, bytes)) or not isinstance(result, IterableABC):
+        return decisions
+
+    for entry in result:
+        if isinstance(entry, BlockingDriftDecision):
+            decisions.append(entry)
+        elif isinstance(entry, DriftItem):
+            decisions.append(
+                BlockingDriftDecision(
+                    drift=entry,
+                    reason="Classified as blocking by semantic provider.",
+                    source="semantic",
+                )
+            )
+        elif isinstance(entry, dict) and isinstance(entry.get("drift"), DriftItem):
+            decisions.append(
+                BlockingDriftDecision(
+                    drift=entry["drift"],
+                    reason=str(entry.get("reason") or "Classified as blocking."),
+                    source=str(entry.get("source") or "semantic"),
+                )
+            )
+    return decisions
 
 
 def _to_drift_item(m: MatchResult) -> DriftItem:

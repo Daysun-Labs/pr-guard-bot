@@ -59,13 +59,14 @@ def test_satisfied_via_symbol_name():
 
 
 def test_satisfied_via_changed_text_tokens():
+    # Token-coverage evidence comes from code changes (here a .py file).
     diff = parse_unified_diff(
         """\
-diff --git a/README.md b/README.md
---- a/README.md
-+++ b/README.md
+diff --git a/src/app/notify.py b/src/app/notify.py
+--- a/src/app/notify.py
++++ b/src/app/notify.py
 @@ -1,2 +1,3 @@
-+Slack incoming webhook notification is sent within five minutes.
++# Slack incoming webhook notification is sent within five minutes.
 """
     )
     req = _req("Send Slack incoming webhook notification within five minutes")
@@ -80,6 +81,25 @@ diff --git a/README.md b/README.md
         "five",
         "minutes",
     }
+
+
+def test_doc_only_change_yields_no_token_evidence():
+    # The same prose in a docs file must NOT count as implementing the
+    # requirement — this is the scope rule that kills doc/config-PR noise.
+    diff = parse_unified_diff(
+        """\
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1,2 +1,3 @@
++Slack incoming webhook notification is sent within five minutes.
+"""
+    )
+    req = _req("Send Slack incoming webhook notification within five minutes")
+    report = match_requirements([req], diff)
+    assert not report.satisfied
+    assert report.unmet[0].score == 0.0
+    assert report.unmet[0].evidence.matched_tokens == []
 
 
 def test_unmet_when_diff_unrelated():
@@ -123,6 +143,56 @@ def test_threshold_controls_token_match():
     # So validate report shape rather than flip.
     assert (len(strict.satisfied) + len(strict.unmet)) == 1
     assert (len(loose.satisfied) + len(loose.unmet)) == 1
+
+
+def test_subword_match_keeps_real_identifier_hits():
+    # "webhook" must still match the identifier "send_slack_webhook".
+    diff = parse_unified_diff(
+        """\
+diff --git a/x.py b/x.py
+--- a/x.py
++++ b/x.py
+@@ -1 +1,2 @@
++def send_slack_webhook(url):
+"""
+    )
+    report = match_requirements([_req("Slack webhook must be sent")], diff)
+    matched = (report.satisfied or report.unmet)[0].evidence.matched_tokens
+    assert {"slack", "webhook"} <= set(matched)
+
+
+def test_no_substring_collision_on_short_tokens():
+    # "pr"/"ci"/"io" must NOT match "print" — they are not whole subwords of it.
+    diff = parse_unified_diff(
+        """\
+diff --git a/y.py b/y.py
+--- a/y.py
++++ b/y.py
+@@ -1 +1,2 @@
++    print(value)
+"""
+    )
+    report = match_requirements([_req("pr ci io")], diff)
+    result = (report.satisfied or report.unmet)[0]
+    assert result.evidence.matched_tokens == []
+    assert result.score == 0.0
+
+
+def test_deleted_symbol_is_not_evidence():
+    # Removing a definition must not satisfy a requirement that names it.
+    diff = parse_unified_diff(
+        """\
+diff --git a/z.py b/z.py
+--- a/z.py
++++ b/z.py
+@@ -1,2 +1 @@
+-def process_webhook(payload):
+ keep = 1
+"""
+    )
+    report = match_requirements([_req("process_webhook handler must exist")], diff)
+    assert not report.satisfied
+    assert report.unmet[0].evidence.matched_symbols == []
 
 
 def test_result_serialization_roundtrip():
