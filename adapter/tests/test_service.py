@@ -54,6 +54,28 @@ BASE_PAYLOAD = {
     "proposal_shape": ["action", "new_content", "message", "rationale"],
 }
 
+BLOCKING_PAYLOAD = {
+    "schema_version": "pr-guard.blocking-drift/v1",
+    "task": "blocking_drift_classification",
+    "metadata": BASE_PAYLOAD["metadata"],
+    "advisory_drifts": [BASE_PAYLOAD["drift"]],
+    "diff_summary": (
+        "FILE src/webhook_handler.py (modified, +12, -3)\n"
+        "symbols: process_webhook\n"
+        "added:\n"
+        "def process_webhook(payload):\n"
+        "    return handle_payload(payload)"
+    ),
+    "decision_shape": {
+        "blocking": [
+            {
+                "index": 0,
+                "reason": "why this scoped advisory finding is real blocking drift",
+            }
+        ]
+    },
+}
+
 
 def config() -> AdapterConfig:
     return AdapterConfig(
@@ -150,3 +172,52 @@ def test_idempotency_cache_reuses_first_result() -> None:
 
     assert first == second == {"action": "skip", "reason": "first result"}
     assert len(hermes.calls) == 1
+
+
+def test_blocking_classification_returns_validated_indexes_and_prompt() -> None:
+    hermes = FakeHermesClient(
+        json.dumps(
+            {
+                "blocking": [
+                    {
+                        "index": 0,
+                        "reason": "Webhook handler changed but verification remains absent.",
+                    },
+                    {"index": 99, "reason": "out of range"},
+                ]
+            }
+        )
+    )
+    service = ProposalService(config(), hermes_client=hermes)
+
+    result = service.handle(BLOCKING_PAYLOAD)
+
+    assert result == {
+        "blocking": [
+            {
+                "index": 0,
+                "reason": "Webhook handler changed but verification remains absent.",
+            }
+        ]
+    }
+    assert len(hermes.calls) == 1
+    assert "semantic blocking classifier" in hermes.calls[0][0]["content"]
+    assert "blocking_drift_classification" in hermes.calls[0][1]["content"]
+
+
+def test_blocking_classification_malformed_or_timeout_degrades_to_empty() -> None:
+    malformed = ProposalService(config(), hermes_client=FakeHermesClient("not json"))
+    timed_out = ProposalService(config(), hermes_client=FakeHermesClient(httpx.TimeoutException("slow")))
+
+    assert malformed.handle(BLOCKING_PAYLOAD) == {"blocking": []}
+    assert timed_out.handle(BLOCKING_PAYLOAD) == {"blocking": []}
+
+
+def test_blocking_classification_empty_advisory_skips_hermes_call() -> None:
+    hermes = FakeHermesClient('{"blocking":[{"index":0}]}')
+    service = ProposalService(config(), hermes_client=hermes)
+
+    result = service.handle(BLOCKING_PAYLOAD | {"advisory_drifts": []})
+
+    assert result == {"blocking": []}
+    assert hermes.calls == []

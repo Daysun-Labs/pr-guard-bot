@@ -70,7 +70,7 @@ PYTHONPATH=adapter uvicorn pr_guard_adapter.app:create_app --factory --host 127.
 adapter/scripts/smoke.sh adapter/examples/code_fix.request.json
 ```
 
-Expected output is always one of:
+For `seed_fix` and `code_fix`, expected output is always one of:
 
 ```json
 {"action":"update","new_content":"...","message":"...","rationale":"..."}
@@ -80,4 +80,16 @@ or:
 
 ```json
 {"action":"skip","reason":"..."}
+```
+
+For `blocking_drift_classification`, expected output is:
+
+```json
+{"blocking":[{"index":0,"reason":"short evidence-based reason"}]}
+```
+
+or, whenever Hermes is uncertain:
+
+```json
+{"blocking":[]}
 ```

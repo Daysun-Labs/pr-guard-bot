@@ -7,8 +7,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pr_guard_adapter.models import ProposalRequest
-from pr_guard_adapter.validators import parse_model_proposal, validate_proposal
+from pr_guard_adapter.models import BlockingDriftRequest, ProposalRequest
+from pr_guard_adapter.validators import (
+    parse_model_proposal,
+    validate_blocking_decision,
+    validate_proposal,
+)
 
 
 def test_parse_model_proposal_accepts_json_inside_markdown_fence() -> None:
@@ -113,3 +117,43 @@ def test_update_flattens_multiline_commit_message() -> None:
 
     assert result["action"] == "update"
     assert result["message"] == "docs: add OAuth Body not allowed"
+
+
+def test_blocking_decision_drops_invalid_indexes_and_nonblocking_entries() -> None:
+    request = BlockingDriftRequest.model_validate(
+        {
+            "task": "blocking_drift_classification",
+            "advisory_drifts": [
+                {
+                    "source": "prd",
+                    "source_file": "PRD.md",
+                    "line": 1,
+                    "quote": "Add OAuth login",
+                    "severity": "high",
+                    "score": 0.33,
+                }
+            ],
+            "diff_summary": "FILE src/app.py",
+        }
+    )
+
+    result = validate_blocking_decision(
+        {
+            "blocking": [
+                {"index": 0, "reason": "Scoped auth code still omits OAuth."},
+                {"index": 0, "reason": "duplicate"},
+                {"index": 99, "reason": "out of range"},
+                {"index": 0, "decision": "advisory", "reason": "not blocking"},
+            ]
+        },
+        request=request,
+    )
+
+    assert result == {
+        "blocking": [
+            {
+                "index": 0,
+                "reason": "Scoped auth code still omits OAuth.",
+            }
+        ]
+    }

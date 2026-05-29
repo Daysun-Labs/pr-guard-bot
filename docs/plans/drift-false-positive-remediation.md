@@ -3,8 +3,8 @@
 - **Date:** 2026-05-29
 - **Branch:** `claude/youthful-leakey-532f58`
 - **Status:** #1-#3, #5 cleanup, repo-side semantic blocking, reason
-  provenance, and semantic eval fixtures are shipped. Remaining work is
-  Hermes-side handler rollout plus live Actions smoke.
+  provenance, semantic eval fixtures, replay tooling, adapter handler support,
+  and live Actions smoke are shipped. Remaining work is deployment/ops rollout.
 
 ## TL;DR
 
@@ -90,6 +90,17 @@ failures remain 0, and every chore/docs-only PR remains clean in all modes.
 - Provider absence, missing classifier method, malformed responses, and provider
   exceptions all degrade to zero blocking drift.
 
+### Replay Tool and Adapter Handler (`25ff7d3` + follow-up handler work)
+
+- `tools/replay_pr_guard_history.py` turns the 12-commit self-replay into a
+  reusable dev tool.
+- The Hermes adapter accepts `blocking_drift_classification`, prompts Hermes
+  with the conservative blocking policy, validates returned indexes/reasons, and
+  returns `{"blocking":[]}` on uncertainty, timeout, malformed model output, or
+  empty advisory input.
+- Live GitHub Actions `workflow_dispatch` was triggered on this branch and
+  completed successfully on GitHub-hosted runners.
+
 ## Current Behavior Contract
 
 - **Default:** static drift is advisory. It appears in the PR comment and
@@ -129,26 +140,14 @@ PYTHONPATH=src python tools/replay_pr_guard_history.py --commits 12
 
 ## Remaining Work
 
-### A. Hermes-Side Semantic Handler
+### A. Deployment/Ops Rollout
 
-Implement the `blocking_drift_classification` task in the Hermes webhook target.
-It should read `advisory_drifts` and `diff_summary`, apply the conservative
-blocking policy, and return:
+Deploy or restart the actual Hermes adapter service with this branch's
+`blocking_drift_classification` support, then verify a real authenticated
+adapter request. This is operational work and should keep the existing approval
+boundaries for service restarts, secrets, and production configuration.
 
-```json
-{"blocking": [{"index": 0, "reason": "short evidence-based reason"}]}
-```
-
-Return `{"blocking": []}` for uncertainty, docs/config noise, generic
-vocabulary overlap, malformed context, or insufficient evidence.
-
-### B. Live Workflow-Dispatch Smoke
-
-After pushing this branch, run the GitHub Actions `workflow_dispatch` path once
-to confirm `pytest -v` collects adapter tests with `.[dev,anthropic,adapter]` in
-the hosted runner.
-
-### C. Expand Semantic Eval Coverage
+### B. Expand Semantic Eval Coverage
 
 Add more gold cases as real PR examples appear: intentional spec updates,
 renames, touched-but-unrelated code, and true missing-requirement code changes.
@@ -157,10 +156,11 @@ renames, touched-but-unrelated code, and true missing-requirement code changes.
 
 > Continue the PR-guard drift false-positive remediation on branch
 > `claude/youthful-leakey-532f58`. Repo-side #1-#3, #5 cleanup, semantic
-> blocking provider seam, blocking reason provenance, and semantic eval fixtures
-> are done. Next, implement the Hermes webhook handler for
-> `blocking_drift_classification` and run the live workflow-dispatch smoke after
-> pushing the branch. Keep the conservative policy: no provider/uncertainty -> no
-> blocking -> CI green. Verify with `PYTHONPATH=src pytest tests/ -q`,
+> blocking provider seam, blocking reason provenance, semantic eval fixtures,
+> replay tooling, adapter handler support, and live workflow-dispatch smoke are
+> done. Next, plan the deployment/ops rollout for the Hermes adapter service and
+> verify a real authenticated `blocking_drift_classification` request. Keep the
+> conservative policy: no provider/uncertainty -> no blocking -> CI green.
+> Verify repo changes with `PYTHONPATH=src pytest tests/ -q`,
 > `PYTHONPATH=src pytest -v`, and
 > `PYTHONPATH=src python tools/replay_pr_guard_history.py --commits 12`.
