@@ -182,5 +182,34 @@ def test_fail_on_advisory_promotes_every_item_to_blocking() -> None:
     assert blocking == advisory
 
 
+def test_provider_can_promote_advisory_items_to_blocking() -> None:
+    advisory = [_drift(score=0.33), _drift(score=0.5)]
+
+    class Provider:
+        def classify_blocking_drift(self, items, *, diff_summary=None):
+            assert items == advisory
+            assert diff_summary == "scoped diff"
+            return [items[1]]
+
+    blocking = select_blocking_drift(
+        advisory,
+        provider=Provider(),
+        diff_summary="scoped diff",
+    )
+
+    assert blocking == [advisory[1]]
+
+
+def test_provider_absence_or_failure_degrades_to_non_blocking() -> None:
+    advisory = [_drift(score=0.33)]
+
+    class FailingProvider:
+        def classify_blocking_drift(self, items, *, diff_summary=None):
+            raise RuntimeError("provider unavailable")
+
+    assert select_blocking_drift(advisory, provider=object()) == []
+    assert select_blocking_drift(advisory, provider=FailingProvider()) == []
+
+
 def test_select_blocking_empty_input() -> None:
     assert select_blocking_drift([], fail_on_advisory=True) == []

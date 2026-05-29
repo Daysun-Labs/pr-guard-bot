@@ -16,6 +16,8 @@ from .drift import DriftItem
 from .patcher import (
     DEFAULT_MODEL,
     PatchProposal,
+    _FENCE_RE,
+    _extract_text,
     _parse_proposal,
     _slug,
     generate_code_fix_proposal,
@@ -23,6 +25,7 @@ from .patcher import (
 )
 
 PROPOSAL_SCHEMA_VERSION = "pr-guard.hermes-proposal/v1"
+BLOCKING_SCHEMA_VERSION = "pr-guard.blocking-drift/v1"
 
 
 class LLMProvider(Protocol):
@@ -41,6 +44,13 @@ class LLMProvider(Protocol):
         repo_context: str,
         proposals_dir: str = "docs/pr-guard-proposals",
     ) -> Optional[PatchProposal]: ...
+
+    def classify_blocking_drift(
+        self,
+        advisory: list[DriftItem],
+        *,
+        diff_summary: str | None = None,
+    ) -> list[DriftItem]: ...
 
 
 class HttpClient(Protocol):
@@ -105,6 +115,22 @@ class AnthropicProvider:
             proposals_dir=proposals_dir,
             model=self.model,
         )
+
+    def classify_blocking_drift(
+        self,
+        advisory: list[DriftItem],
+        *,
+        diff_summary: str | None = None,
+    ) -> list[DriftItem]:
+        if not advisory:
+            return []
+        resp = _call_blocking_classifier(
+            self._claude(),
+            advisory=advisory,
+            diff_summary=diff_summary,
+            model=self.model,
+        )
+        return _select_blocking_from_response(resp, advisory)
 
     def _claude(self) -> _AnthropicMessagesAdapter:
         if self._client is None:
@@ -197,6 +223,32 @@ class HermesWebhookProvider:
         )
         return _parse_webhook_proposal(data, file_path=path)
 
+    def classify_blocking_drift(
+        self,
+        advisory: list[DriftItem],
+        *,
+        diff_summary: str | None = None,
+    ) -> list[DriftItem]:
+        if not advisory:
+            return []
+        data = self._post(
+            {
+                "task": "blocking_drift_classification",
+                "schema_version": BLOCKING_SCHEMA_VERSION,
+                "advisory_drifts": [drift.to_dict() for drift in advisory],
+                "diff_summary": diff_summary or "",
+                "decision_shape": {
+                    "blocking": [
+                        {
+                            "index": 0,
+                            "reason": "why this scoped advisory finding is real blocking drift",
+                        }
+                    ]
+                },
+            }
+        )
+        return _select_blocking_from_response(data, advisory)
+
     def _post(self, payload: dict[str, Any]) -> Any:
         if self.metadata:
             payload = {
@@ -249,3 +301,117 @@ def _parse_webhook_proposal(data: Any, *, file_path: str) -> Optional[PatchPropo
         return None
 
     return _parse_proposal({"content": [{"text": text}]}, file_path=file_path)
+
+
+_SYSTEM_BLOCKING_DRIFT = """\
+You are pr-guard's semantic blocking drift classifier.
+
+The static matcher has already produced scoped advisory drift. Your job is only
+to decide which advisory items should fail CI. Be conservative:
+
+- Return blocking only when the diff is clearly scoped to the requirement area
+  and the requirement is still genuinely missing or contradicted.
+- Do not block on generic vocabulary overlap, docs/config-only changes,
+  ambiguous requirements, or cases where the diff lacks enough context.
+- If uncertain, return no blocking items.
+
+OUTPUT JSON ONLY:
+
+{"blocking": [{"index": 0, "reason": "<short evidence-based reason>"}]}
+
+or:
+
+{"blocking": []}
+"""
+
+
+def _call_blocking_classifier(
+    client: Any,
+    *,
+    advisory: list[DriftItem],
+    diff_summary: str | None,
+    model: str,
+) -> Any:
+    payload = {
+        "schema_version": BLOCKING_SCHEMA_VERSION,
+        "advisory_drifts": [
+            {"index": index, **drift.to_dict()} for index, drift in enumerate(advisory)
+        ],
+        "diff_summary": diff_summary or "",
+    }
+    return client.create(
+        model=model,
+        max_tokens=1024,
+        system=[
+            {
+                "type": "text",
+                "text": _SYSTEM_BLOCKING_DRIFT,
+                "cache_control": {"type": "ephemeral"},
+            },
+        ],
+        messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+    )
+
+
+def _select_blocking_from_response(data: Any, advisory: list[DriftItem]) -> list[DriftItem]:
+    indexes = _parse_blocking_indexes(data, item_count=len(advisory))
+    return [advisory[index] for index in indexes]
+
+
+def _parse_blocking_indexes(data: Any, *, item_count: int) -> list[int]:
+    if not item_count:
+        return []
+
+    if isinstance(data, dict) and not any(
+        key in data for key in ("blocking", "blocking_indexes", "classification")
+    ):
+        text = _extract_text(data).strip()
+        if text:
+            m = _FENCE_RE.match(text)
+            if m:
+                text = m.group(1).strip()
+            try:
+                data = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                return []
+
+    if not isinstance(data, dict):
+        text = _extract_text(data).strip()
+        if not text:
+            return []
+        m = _FENCE_RE.match(text)
+        if m:
+            text = m.group(1).strip()
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return []
+
+    if not isinstance(data, dict):
+        return []
+    if isinstance(data.get("classification"), dict):
+        data = data["classification"]
+
+    entries = data.get("blocking_indexes")
+    if entries is None:
+        entries = data.get("blocking")
+    if not isinstance(entries, list):
+        return []
+
+    indexes: list[int] = []
+    for entry in entries:
+        index: int | None = None
+        if isinstance(entry, int):
+            index = entry
+        elif isinstance(entry, dict):
+            raw_index = entry.get("index")
+            if isinstance(raw_index, int):
+                index = raw_index
+            decision = str(entry.get("decision", "blocking")).lower()
+            if decision not in {"blocking", "block", "true", "yes"}:
+                index = None
+
+        if index is None or index < 0 or index >= item_count or index in indexes:
+            continue
+        indexes.append(index)
+    return indexes

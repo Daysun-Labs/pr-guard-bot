@@ -27,7 +27,11 @@ def _install_common_stubs(monkeypatch: Any, actionable: list[DriftItem]) -> dict
     calls = {"github": 0, "publish": 0, "slack": 0, "fix_prs": 0}
     suppressed = {"unrelated": 1, "non_goal": 0}
 
-    monkeypatch.setattr(main_mod, "detect_spec_files", lambda repo_root: {"prd": True, "seed": True})
+    monkeypatch.setattr(
+        main_mod,
+        "detect_spec_files",
+        lambda repo_root: {"prd": True, "seed": True},
+    )
     monkeypatch.setattr(
         main_mod,
         "parse_repo",
@@ -135,6 +139,137 @@ def test_no_publish_advisory_drift_is_non_blocking_by_default(
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["verdict"] == "pass"
     assert report["drift_count"] == 1
+    assert report["blocking_count"] == 0
+
+
+def test_provider_semantic_blocking_fails_gate_without_fix_prs(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    drift = _drift()
+    monkeypatch.setenv("GITHUB_TOKEN", "dummy-token")
+    monkeypatch.setenv("PR_GUARD_MAX_FIX_PRS", "0")
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.setattr(
+        main_mod,
+        "detect_spec_files",
+        lambda repo_root: {"prd": True, "seed": True},
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "parse_repo",
+        lambda repo_root: SpecBundle(
+            prd_path="PRD.md",
+            seed_path="SEED.md",
+            seed_yaml_path=None,
+            requirements=[],
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_git_diff", lambda base_ref, head_ref, repo_root: "")
+    monkeypatch.setattr(main_mod, "detect_drift", lambda spec_bundle, diff: [drift])
+    monkeypatch.setattr(
+        main_mod,
+        "filter_actionable_drift",
+        lambda raw: ([drift], {"unrelated": 0, "non_goal": 0}),
+    )
+    monkeypatch.setattr(main_mod, "create_github_client", lambda token: object())
+
+    class Provider:
+        def classify_blocking_drift(self, items, *, diff_summary=None):
+            assert diff_summary == ""
+            return [items[0]]
+
+    monkeypatch.setattr(main_mod, "resolve_llm_provider", lambda env, **kwargs: Provider())
+    published: dict[str, str] = {}
+    output = tmp_path / "pr-guard-report.json"
+
+    def record_publish(*args: Any, **kwargs: Any) -> None:
+        published["body"] = kwargs["body"]
+
+    monkeypatch.setattr(main_mod, "publish_pr_comment", record_publish)
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+            "--json-output",
+            str(output),
+            "--fail-on-drift",
+        ]
+    )
+
+    assert rc == 1
+    assert "semantic classifier marked 1 advisory drift item" in published["body"]
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["verdict"] == "fail"
+    assert report["drift_count"] == 1
+    assert report["blocking_count"] == 1
+
+
+def test_missing_provider_key_keeps_advisory_drift_green(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "dummy-token")
+    monkeypatch.setenv("PR_GUARD_MAX_FIX_PRS", "0")
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("HERMES_PR_GUARD_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(main_mod, "detect_spec_files", lambda repo_root: {"prd": True, "seed": True})
+    monkeypatch.setattr(
+        main_mod,
+        "parse_repo",
+        lambda repo_root: SpecBundle(
+            prd_path="PRD.md",
+            seed_path="SEED.md",
+            seed_yaml_path=None,
+            requirements=[],
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_git_diff", lambda base_ref, head_ref, repo_root: "")
+    monkeypatch.setattr(main_mod, "detect_drift", lambda spec_bundle, diff: [_drift()])
+    monkeypatch.setattr(
+        main_mod,
+        "filter_actionable_drift",
+        lambda raw: ([_drift()], {"unrelated": 0, "non_goal": 0}),
+    )
+    monkeypatch.setattr(main_mod, "create_github_client", lambda token: object())
+    published: dict[str, str] = {}
+    output = tmp_path / "pr-guard-report.json"
+
+    def record_publish(*args: Any, **kwargs: Any) -> None:
+        published["body"] = kwargs["body"]
+
+    monkeypatch.setattr(main_mod, "publish_pr_comment", record_publish)
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+            "--json-output",
+            str(output),
+            "--fail-on-drift",
+        ]
+    )
+
+    assert rc == 0
+    assert "semantic blocking classification was skipped" in published["body"]
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["verdict"] == "pass"
     assert report["blocking_count"] == 0
 
 

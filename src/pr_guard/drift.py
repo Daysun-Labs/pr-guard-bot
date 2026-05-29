@@ -15,7 +15,7 @@ generation can cite the exact PRD/SEED line.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Iterable
+from typing import Any, Iterable
 
 from .diff_extractor import NormalizedDiff
 from .spec_matcher import MatchResult, match_requirements
@@ -121,6 +121,8 @@ def select_blocking_drift(
     advisory: Iterable[DriftItem],
     *,
     fail_on_advisory: bool = False,
+    provider: Any | None = None,
+    diff_summary: str | None = None,
 ) -> list[DriftItem]:
     """Return the drift items that should *block* CI (fail the check).
 
@@ -142,10 +144,30 @@ def select_blocking_drift(
     oracle) is the intended producer of genuinely blocking drift; this function
     is the seam where it plugs in.
 
+    When an LLM/Hermes provider is supplied, it may promote scoped advisory
+    findings to blocking drift via ``classify_blocking_drift``. Provider absence,
+    provider implementations without that method, and provider errors all
+    degrade to no blocking drift so CI stays green unless there is an explicit
+    high-confidence blocking signal.
+
     Set ``fail_on_advisory`` to opt back into the legacy strict behaviour where
     every advisory item blocks the check.
     """
-    return list(advisory) if fail_on_advisory else []
+    items = list(advisory)
+    if fail_on_advisory:
+        return items
+    if not items or provider is None:
+        return []
+
+    classifier = getattr(provider, "classify_blocking_drift", None)
+    if not callable(classifier):
+        return []
+
+    try:
+        blocking = classifier(items, diff_summary=diff_summary)
+    except Exception:
+        return []
+    return [item for item in blocking if isinstance(item, DriftItem)]
 
 
 def _to_drift_item(m: MatchResult) -> DriftItem:

@@ -258,6 +258,28 @@ def _repo_overview(repo_root: Path, *, max_files: int = 80) -> str:
     return "\n".join(paths)
 
 
+def _diff_summary_for_semantic_blocking(diff: Any, *, max_chars: int = 4000) -> str:
+    """Compact diff context for the semantic blocking classifier."""
+    lines: list[str] = []
+    for file in diff.files[:12]:
+        lines.append(
+            f"FILE {file.path} ({file.change_type}, +{file.added_lines}, -{file.removed_lines})"
+        )
+        if file.added_symbols:
+            lines.append("symbols: " + ", ".join(file.added_symbols[:20]))
+        added = file.added_text.strip()
+        if added:
+            lines.append("added:")
+            lines.append(added[:800])
+        lines.append("")
+
+    if len(diff.files) > 12:
+        lines.append(f"... {len(diff.files) - 12} more file(s) omitted")
+
+    summary = "\n".join(lines).strip()
+    return summary[:max_chars]
+
+
 def _format_fix_pr_result(item: tuple[DriftItem, int] | dict[str, Any]) -> str:
     if isinstance(item, dict):
         drift = item.get("drift")
@@ -419,13 +441,7 @@ def main(argv: list[str] | None = None) -> int:
     # 4) Detect drift → filter actionable → render + post comment
     raw_drifts = detect_drift(spec_bundle, diff)
     advisory, suppressed = filter_actionable_drift(raw_drifts)
-    blocking = select_blocking_drift(
-        advisory, fail_on_advisory=args.fail_on_advisory_drift
-    )
-    total_reqs = len(spec_bundle.requirements)
-    addressed = total_reqs - len(raw_drifts)
 
-    # 4a) Fix-PR 자동 생성 (Hermes webhook preferred; Anthropic fallback)
     provider_metadata = {
         "repo": args.repo,
         "pr_number": args.pr_number,
@@ -438,6 +454,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.no_publish
         else resolve_llm_provider(os.environ, metadata=provider_metadata)
     )
+    blocking = select_blocking_drift(
+        advisory,
+        fail_on_advisory=args.fail_on_advisory_drift,
+        provider=provider,
+        diff_summary=_diff_summary_for_semantic_blocking(diff),
+    )
+    total_reqs = len(spec_bundle.requirements)
+    addressed = total_reqs - len(raw_drifts)
+
+    # 4a) Fix-PR 자동 생성 (Hermes webhook preferred; Anthropic fallback)
     max_fixes = int(os.environ.get("PR_GUARD_MAX_FIX_PRS", str(MAX_FIX_PRS_DEFAULT)))
     fix_prs: list[Any] = []
     if provider is not None and advisory and max_fixes > 0 and octokit is not None:
@@ -466,6 +492,23 @@ def main(argv: list[str] | None = None) -> int:
             "**not** fail the check. Run with `--fail-on-advisory-drift` to block "
             "on them.)_"
         )
+    elif blocking:
+        if args.fail_on_advisory_drift:
+            footer_parts.append(
+                f"\n_(strict advisory mode promoted {len(blocking)} drift item(s) "
+                "to blocking.)_"
+            )
+        else:
+            footer_parts.append(
+                f"\n_(semantic classifier marked {len(blocking)} advisory drift item(s) "
+                "as blocking.)_"
+            )
+    if advisory and provider is None:
+        footer_parts.append(
+            "\n_(no LLM provider configured; semantic blocking classification was skipped, "
+            "so advisory drift remains non-blocking. Set `HERMES_PR_GUARD_WEBHOOK_URL` "
+            "(preferred) or `ANTHROPIC_API_KEY` to enable semantic blocking.)_"
+        )
     if fix_prs:
         fix_list = "\n".join(_format_fix_pr_result(item) for item in fix_prs)
         ready_count = _fix_pr_ready_count(fix_prs)
@@ -483,11 +526,6 @@ def main(argv: list[str] | None = None) -> int:
         footer_parts.append(
             "\n_(no fix PRs created — LLM provider declined or generation hit an error; "
             "see Actions logs)_"
-        )
-    elif advisory and provider is None:
-        footer_parts.append(
-            "\n_(set `HERMES_PR_GUARD_WEBHOOK_URL` (preferred) or `ANTHROPIC_API_KEY` "
-            "to enable auto fix-PR generation)_"
         )
     footer = "\n\n---\n" + "\n".join(footer_parts)
 

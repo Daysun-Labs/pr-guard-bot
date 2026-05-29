@@ -124,6 +124,48 @@ def test_hermes_code_fix_posts_context_and_parses_nested_proposal() -> None:
     assert http.requests[0]["json"]["repo_context"] == "src/pr_guard/main.py\n"
 
 
+def test_hermes_blocking_classifier_posts_advisory_context_and_parses_indexes() -> None:
+    http = CapturingHttpClient({"blocking": [{"index": 0, "reason": "real missing flow"}]})
+    provider = HermesWebhookProvider("https://hermes.example/pr-guard", http_client=http)
+    drift = _drift(source="prd")
+
+    blocking = provider.classify_blocking_drift([drift], diff_summary="FILE src/app.py")
+
+    assert blocking == [drift]
+    request_json = http.requests[0]["json"]
+    assert request_json["task"] == "blocking_drift_classification"
+    assert request_json["schema_version"] == "pr-guard.blocking-drift/v1"
+    assert request_json["advisory_drifts"] == [drift.to_dict()]
+    assert request_json["diff_summary"] == "FILE src/app.py"
+
+
+def test_anthropic_blocking_classifier_parses_json_response() -> None:
+    class FakeMessages:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, Any]] = []
+
+        def create(self, **kwargs: Any) -> dict[str, Any]:
+            self.requests.append(kwargs)
+            return {"content": [{"text": json.dumps({"blocking": [{"index": 1}]})}]}
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.messages = FakeMessages()
+
+    client = FakeClient()
+    provider = AnthropicProvider("sk-ant-test", client=client)
+    first = _drift(source="prd")
+    second = _drift(source="seed")
+
+    blocking = provider.classify_blocking_drift([first, second], diff_summary="FILE src/app.py")
+
+    assert blocking == [second]
+    user_payload = json.loads(client.messages.requests[0]["messages"][0]["content"])
+    assert user_payload["schema_version"] == "pr-guard.blocking-drift/v1"
+    assert user_payload["advisory_drifts"][1]["index"] == 1
+    assert user_payload["diff_summary"] == "FILE src/app.py"
+
+
 def test_hermes_payload_includes_metadata_when_configured() -> None:
     http = CapturingHttpClient({"action": "skip", "reason": "test"})
     provider = HermesWebhookProvider(
