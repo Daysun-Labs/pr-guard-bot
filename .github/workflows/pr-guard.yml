@@ -77,6 +77,69 @@ jobs:
           # 봇 본체, 테스트 의존성, adapter smoke deps, legacy Anthropic fallback extra 설치
           pip install -e ".[dev,anthropic,adapter]"
 
+      - name: Hermes proposal adapter smoke
+        if: github.event_name == 'pull_request' && github.head_ref == 'codex/hermes-proposal-smoke'
+        env:
+          HERMES_PR_GUARD_WEBHOOK_URL: ${{ secrets.HERMES_PR_GUARD_WEBHOOK_URL }}
+          HERMES_PR_GUARD_WEBHOOK_TOKEN: ${{ secrets.HERMES_PR_GUARD_WEBHOOK_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          url = os.environ.get("HERMES_PR_GUARD_WEBHOOK_URL", "").strip()
+          token = os.environ.get("HERMES_PR_GUARD_WEBHOOK_TOKEN", "").strip()
+          repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+          if not url or not token:
+              raise SystemExit("Hermes PR Guard adapter secrets are not configured")
+
+          def smoke(path: str) -> None:
+              with open(path, "r", encoding="utf-8") as fh:
+                  payload_json = json.load(fh)
+              payload_json.setdefault("metadata", {})["repo"] = repo
+              payload = json.dumps(payload_json).encode()
+              req = urllib.request.Request(
+                  url,
+                  data=payload,
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/json",
+                      "Content-Type": "application/json",
+                      "User-Agent": "pr-guard-bot-actions-smoke/0.1",
+                      "X-PR-Guard-Request-Id": f"actions-smoke-{os.path.basename(path)}",
+                  },
+                  method="POST",
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      body = response.read()
+              except urllib.error.HTTPError as exc:
+                  detail = exc.read().decode("utf-8", "replace")[:240]
+                  raise SystemExit(f"{path}: HTTP {exc.code} from adapter: {detail}") from exc
+              data = json.loads(body)
+              action = data.get("action")
+              if action == "update":
+                  required = {"new_content", "message", "rationale"}
+                  missing = sorted(required - data.keys())
+                  if missing:
+                      raise SystemExit(f"{path}: update missing fields {missing}")
+                  print(
+                      f"{path}: update JSON ok "
+                      f"(new_content_len={len(data['new_content'])}, "
+                      f"message_len={len(data['message'])}, "
+                      f"rationale_len={len(data['rationale'])})"
+                  )
+              elif action == "skip":
+                  print(f"{path}: skip JSON ok")
+              else:
+                  raise SystemExit(f"{path}: unexpected action {action!r}")
+
+          smoke("adapter/examples/code_fix.request.json")
+          smoke("adapter/examples/seed_fix.request.json")
+          PY
+
       - name: Run PR Guard
         if: github.event_name == 'pull_request'
         env:
