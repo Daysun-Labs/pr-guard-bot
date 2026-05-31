@@ -29,6 +29,7 @@ from .drift import (
     DriftItem,
     detect_drift,
     filter_actionable_drift,
+    partition_coverage_only_drift,
     select_blocking_drift_decisions,
 )
 from .fix_pr import create_or_reuse_fix_pr
@@ -459,8 +460,14 @@ def main(argv: list[str] | None = None) -> int:
     raw_diff = _git_diff(args.base_ref, args.head_ref, repo_root=args.repo_root)
     diff = parse_unified_diff(raw_diff)
 
-    # 4) Detect drift → filter actionable → render + post comment
+    # 4) Detect drift → scope-filter coverage-only PRs → filter actionable →
+    #    render + post comment.
     raw_drifts = detect_drift(spec_bundle, diff)
+    # A tests/docs-only PR introduces no implementation, so unmet 성공 기준/핵심
+    # 제약 are coverage, not drift (PRD/SEED non-goal rule). Strip those before
+    # actionable filtering so they never reach the semantic classifier or fail
+    # the check. Source-touching PRs are unaffected — see partition docstring.
+    raw_drifts, coverage_only_suppressed = partition_coverage_only_drift(raw_drifts, diff)
     advisory, suppressed = filter_actionable_drift(raw_drifts)
 
     provider_metadata = {
@@ -508,6 +515,12 @@ def main(argv: list[str] | None = None) -> int:
         f"suppressed {suppressed['unrelated']} unrelated, "
         f"{suppressed['non_goal']} non-goal items (L1 noise reduction).",
     ]
+    if coverage_only_suppressed:
+        footer_parts.append(
+            f"\n_(scope: coverage-only PR — every changed file is a test or doc, so "
+            f"{len(coverage_only_suppressed)} unmet 성공 기준/핵심 제약 were treated as "
+            "coverage of already-merged implementation, not drift.)_"
+        )
     if advisory and not blocking:
         footer_parts.append(
             "\n_(advisory only — these are static token-coverage findings and do "
@@ -587,6 +600,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"[drift] raw={len(raw_drifts)} advisory={len(advisory)} "
         f"blocking={len(blocking)} fix_prs={len(fix_prs)} "
+        f"coverage_only_suppressed={len(coverage_only_suppressed)} "
         f"(suppressed unrelated={suppressed['unrelated']}, non_goal={suppressed['non_goal']})"
     )
 

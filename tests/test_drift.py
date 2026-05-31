@@ -12,6 +12,7 @@ from pr_guard.drift import (
     DriftItem,
     detect_drift,
     filter_actionable_drift,
+    partition_coverage_only_drift,
     select_blocking_drift,
     select_blocking_drift_decisions,
 )
@@ -168,6 +169,95 @@ def test_filter_floor_is_inclusive() -> None:
     actionable, suppressed = filter_actionable_drift([_drift(score=0.33), _drift(score=0.3299)])
     assert [d.score for d in actionable] == [0.33]
     assert suppressed == {"non_goal": 0, "unrelated": 1}
+
+
+# ---------------------------------------------------------------------------
+# partition_coverage_only_drift — tests/docs-only PRs owe no implementation
+# ---------------------------------------------------------------------------
+
+# A pure-test diff whose new test shares one of three salient tokens with a
+# requirement ("citation"), landing the match score in the actionable band
+# (1/3 = 0.3333: >= ACTIONABLE_SCORE_FLOOR but < the satisfied threshold).
+COVERAGE_ONLY_DIFF = """diff --git a/tests/recall.test.ts b/tests/recall.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/recall.test.ts
+@@ -0,0 +1,3 @@
++test("recall citation", () => {
++  expect(citation).toBeTruthy();
++});
+"""
+
+# Same partial-overlap requirement, but the change is product source, so the
+# drift must NOT be suppressed.
+SOURCE_PARTIAL_DIFF = """diff --git a/packages/brain/src/recall.ts b/packages/brain/src/recall.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/brain/src/recall.ts
+@@ -0,0 +1,3 @@
++export function buildResult() {
++  return citation;
++}
+"""
+
+
+def test_partition_suppresses_only_implementation_kinds_on_coverage_only() -> None:
+    diff = parse_unified_diff(COVERAGE_ONLY_DIFF)
+    drifts = [
+        _drift(kind="acceptance"),
+        _drift(kind="constraint"),
+        _drift(kind="intent"),
+        _drift(kind="non_goal"),
+    ]
+    kept, suppressed = partition_coverage_only_drift(drifts, diff)
+    assert {d.kind for d in suppressed} == {"acceptance", "constraint", "intent"}
+    assert [d.kind for d in kept] == ["non_goal"]
+
+
+def test_partition_is_noop_on_source_diff() -> None:
+    diff = parse_unified_diff(SAMPLE_DIFF)  # touches src/pkg/widget.py
+    drifts = [_drift(kind="acceptance"), _drift(kind="constraint")]
+    kept, suppressed = partition_coverage_only_drift(drifts, diff)
+    assert suppressed == []
+    assert kept == drifts
+
+
+def test_partition_is_noop_on_empty_diff() -> None:
+    diff = parse_unified_diff("")
+    drifts = [_drift(kind="acceptance")]
+    kept, suppressed = partition_coverage_only_drift(drifts, diff)
+    assert suppressed == []
+    assert kept == drifts
+
+
+def test_coverage_only_pr_drops_actionable_implementation_drift() -> None:
+    """End-to-end: a test-only PR yields zero actionable drift after scope-filter."""
+    diff = parse_unified_diff(COVERAGE_ONLY_DIFF)
+    # PRD "성공 기준" lines parse as kind="intent" (see spec_parser).
+    reqs = [_req("citation accuracy benchmark", kind="intent", line=20)]
+
+    raw = detect_drift(reqs, diff)
+    advisory_before, _ = filter_actionable_drift(raw)
+    assert len(advisory_before) == 1  # false positive exists pre-fix
+    assert advisory_before[0].score == 0.3333
+
+    kept, suppressed = partition_coverage_only_drift(raw, diff)
+    advisory_after, _ = filter_actionable_drift(kept)
+    assert advisory_after == []  # scope-filter clears the false positive
+    assert len(suppressed) == 1
+    assert suppressed[0].kind == "intent"
+
+
+def test_source_pr_preserves_actionable_drift_after_scope_filter() -> None:
+    """Regression guard: a real source PR with the same partial match still drifts."""
+    diff = parse_unified_diff(SOURCE_PARTIAL_DIFF)
+    reqs = [_req("citation accuracy benchmark", kind="intent", line=20)]
+
+    raw = detect_drift(reqs, diff)
+    kept, suppressed = partition_coverage_only_drift(raw, diff)
+    assert suppressed == []  # source diff → nothing suppressed
+    advisory, _ = filter_actionable_drift(kept)
+    assert len(advisory) == 1  # genuine source drift preserved
 
 
 # select_blocking_drift
