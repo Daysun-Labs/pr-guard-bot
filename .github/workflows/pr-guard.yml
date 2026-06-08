@@ -53,7 +53,7 @@ jobs:
     steps:
       - name: Checkout PR
         # actions/checkout@v4 pinned to an immutable commit for CI supply-chain safety.
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           # Avoid fetching every branch/tag; some repos/org policies reject that ref listing.
           # The guard only needs the checked-out PR ref plus the base ref fetched below.
