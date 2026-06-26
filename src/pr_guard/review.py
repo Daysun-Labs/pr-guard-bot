@@ -88,7 +88,9 @@ def parse_review_response(data: Any) -> ReviewReport:
         findings = _parse_findings(raw_findings)
         score = _parse_score(parsed.get("score"))
         if score is None:
-            score = 3 if isinstance(raw_findings, list) else UNKNOWN_SCORE
+            # A provider that omits/garbles score must not be reported as a
+            # concrete mediocre score (would mislead the comment/loop wiring).
+            score = UNKNOWN_SCORE
 
         summary = parsed.get("summary")
         if not isinstance(summary, str) or not summary.strip():

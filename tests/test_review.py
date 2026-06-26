@@ -132,6 +132,12 @@ def test_parse_review_response_drops_malformed_findings() -> None:
     assert report.findings[0].line == 7
 
 
+def test_parse_review_response_missing_score_with_findings_returns_unknown() -> None:
+    report = parse_review_response({"summary": "no score", "findings": [_finding()]})
+    assert report.score == UNKNOWN_SCORE
+    assert len(report.findings) == 1
+
+
 def test_review_report_has_blocking_security_true_for_security_error() -> None:
     report = ReviewReport(
         findings=(

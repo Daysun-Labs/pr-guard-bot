@@ -73,3 +73,11 @@ drift 검출은 "스펙대로 만들었나"만 본다. **일반 버그·보안·
 1. 이 계획을 pr-guard-bot `docs/plans/review-mode.md`로 커밋 + GitHub 이슈화.
 2. PR #1(provider 메서드)부터 2-모델 루프로 구현(Opus 설계·리뷰 + Codex 실행).
 3. astate-brain `pr-guard.yml`에 `--review`(advisory) 켜기.
+
+## 8. PR #33 리뷰 반영 (Codex)
+- **#1 Hermes 어댑터 `task:"review"` 미지원** — `HermesWebhookProvider.review_diff`가 `task:"review"`를 POST하지만 번들 어댑터(`adapter/pr_guard_adapter/core.py`)는 `seed_fix`/`code_fix`/`blocking_drift_classification`만 처리 → Hermes 경로 리뷰는 UNKNOWN으로 떨어진다. **슬라이스 1b로 분리**: 어댑터에 review 핸들러 추가. (현재 PR은 provider-only 범위라 의도적으로 제외. Anthropic 직접 경로는 동작.)
+- **#2 score 누락 시 UNKNOWN** — `findings`는 있고 `score`가 빠진 응답을 3/5로 보고하던 것을 `UNKNOWN_SCORE`로 수정(루프/코멘트 오판 방지). 테스트 추가.
+
+## 9. 핵심 발견 — 구독으로 일반 리뷰는 이미 가능
+- **Codex GitHub 리뷰**(`chatgpt-codex-connector`)가 ChatGPT 구독 트랙으로 PR을 이미 자동 리뷰(API 키 불필요; 클라우드/GitHub 기능은 구독 전용, API 키 모드는 제거됨). → Greptile/Vercel-Agent의 일반 리뷰는 **이미 구독으로 대체됨**. pr-guard-bot review-mode는 "결정적·repo-제어·score 게이트"가 필요할 때의 보완재.
+- pr-guard-bot 자체 LLM(드리프트/리뷰)은 Hermes webhook 또는 `ANTHROPIC_API_KEY`(과금). 구독을 쓰려면 Hermes를 구독-백엔드로 라우팅하거나, 별도로 Claude Max `CLAUDE_CODE_OAUTH_TOKEN`(`claude-code-action`) 경로를 쓴다.
