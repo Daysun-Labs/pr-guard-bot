@@ -80,6 +80,10 @@ def build_review_payload(*, diff_summary: str, repo_context: str) -> dict[str, s
 
 def parse_review_response(data: Any) -> ReviewReport:
     try:
+        non_review_reason = _non_review_provider_reason(data)
+        if non_review_reason is not None:
+            return _unknown_report(non_review_reason)
+
         parsed = _coerce_review_mapping(data)
         if parsed is None:
             return _unknown_report("Unable to parse review response.")
@@ -132,6 +136,37 @@ def review_diff_via_client(
         ],
     )
     return parse_review_response(resp)
+
+
+def _non_review_provider_reason(data: Any) -> str | None:
+    """Detect a provider that returned a proposal-style envelope instead of a
+    review report and surface its reason.
+
+    A Hermes webhook/adapter that predates review support routes ``task=review``
+    through its proposal path and rejects it as a malformed proposal, replying
+    with ``{"action": "skip", "reason": ...}``. Without this branch that collapses
+    to an opaque "Unable to parse review response", hiding the actionable reason
+    (e.g. the adapter is stale and not review-aware). The report stays UNKNOWN —
+    no real review happened — but the score-gate comment becomes self-diagnosing.
+    """
+    if not isinstance(data, dict):
+        return None
+    # A genuine review report carries at least one of these keys; never shadow it.
+    if any(key in data for key in ("score", "summary", "findings")):
+        return None
+    action = data.get("action")
+    if not (isinstance(action, str) and action in {"skip", "update"}):
+        return None
+    raw_reason = data.get("reason")
+    detail = (
+        raw_reason.strip()
+        if isinstance(raw_reason, str) and raw_reason.strip()
+        else "no reason given"
+    )
+    return (
+        f"Review provider returned no review report (action={action!r}: {detail}). "
+        "The Hermes webhook/adapter may be stale or not review-aware."
+    )
 
 
 def _coerce_review_mapping(data: Any) -> dict[str, Any] | None:

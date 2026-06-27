@@ -107,6 +107,30 @@ def test_parse_review_response_malformed_or_empty_returns_unknown_report() -> No
     assert empty.summary
 
 
+def test_parse_review_response_surfaces_non_review_provider_skip_reason() -> None:
+    # A stale Hermes adapter that predates review support routes task=review
+    # through its proposal path and rejects it as a malformed proposal.
+    report = parse_review_response(
+        {"action": "skip", "reason": "Malformed PR Guard request: Field required."}
+    )
+
+    assert report.score == UNKNOWN_SCORE
+    assert report.findings == ()
+    assert "Malformed PR Guard request: Field required." in report.summary
+    assert "not review-aware" in report.summary
+
+
+def test_parse_review_response_skip_does_not_shadow_real_review_report() -> None:
+    # An "action" key alongside a real review report must not be misread as a
+    # proposal-style skip; the genuine score/findings still win.
+    report = parse_review_response(
+        {"action": "skip", "score": 4, "summary": "Looks fine.", "findings": []}
+    )
+
+    assert report.score == 4
+    assert report.summary == "Looks fine."
+
+
 def test_parse_review_response_clamps_scores() -> None:
     high = parse_review_response({"score": 9, "summary": "High.", "findings": []})
     low = parse_review_response({"score": -3, "summary": "Low.", "findings": []})
