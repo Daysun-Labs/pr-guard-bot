@@ -69,6 +69,29 @@ def _install_common_stubs(monkeypatch: Any, actionable: list[DriftItem]) -> dict
     return calls
 
 
+def test_slack_summary_links_to_published_pr_comment() -> None:
+    payload = main_mod._slack_summary(
+        "octo/app",
+        42,
+        3,
+        comment_url="https://github.com/octo/app/pull/42#issuecomment-123",
+    )
+
+    assert payload == {
+        "text": (
+            ":shield: `octo/app#42` — drift 3건 감지, "
+            "<https://github.com/octo/app/pull/42#issuecomment-123|PR 코멘트> 게시됨"
+        )
+    }
+
+
+def test_published_comment_url_falls_back_to_comment_id() -> None:
+    assert (
+        main_mod._published_comment_url({"id": 123}, repo="octo/app", pr_number=42)
+        == "https://github.com/octo/app/pull/42#issuecomment-123"
+    )
+
+
 def test_no_publish_fails_only_when_advisory_drift_is_promoted_to_blocking(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -308,6 +331,66 @@ def test_no_publish_pass_report_returns_zero_with_fail_on_drift(
 
     assert rc == 0
     assert json.loads(output.read_text(encoding="utf-8"))["verdict"] == "pass"
+
+
+def test_slack_notification_includes_published_comment_url(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    drift = _drift()
+    comment_url = "https://github.com/octo/app/pull/42#issuecomment-123"
+    slack_payload: dict[str, Any] = {}
+    monkeypatch.setenv("GITHUB_TOKEN", "dummy-token")
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://slack.example/hook")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("HERMES_PR_GUARD_WEBHOOK_URL", raising=False)
+    monkeypatch.setattr(main_mod, "detect_spec_files", lambda repo_root: {"prd": True, "seed": True})
+    monkeypatch.setattr(
+        main_mod,
+        "parse_repo",
+        lambda repo_root: SpecBundle(
+            prd_path="PRD.md",
+            seed_path="SEED.md",
+            seed_yaml_path=None,
+            requirements=[],
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_git_diff", lambda base_ref, head_ref, repo_root: "")
+    monkeypatch.setattr(main_mod, "detect_drift", lambda spec_bundle, diff: [drift])
+    monkeypatch.setattr(
+        main_mod,
+        "filter_actionable_drift",
+        lambda raw: ([drift], {"unrelated": 0, "non_goal": 0}),
+    )
+    monkeypatch.setattr(main_mod, "create_github_client", lambda token: object())
+    monkeypatch.setattr(
+        main_mod,
+        "publish_pr_comment",
+        lambda *args, **kwargs: {"id": 123, "html_url": comment_url},
+    )
+
+    def record_slack(webhook_url: str, payload: dict[str, Any]) -> int:
+        slack_payload.update(payload)
+        return 200
+
+    monkeypatch.setattr(main_mod, "send_slack_webhook", record_slack)
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+        ]
+    )
+
+    assert rc == 0
+    assert f"<{comment_url}|PR 코멘트>" in slack_payload["text"]
 
 
 def test_publish_best_effort_keeps_report_when_comment_publish_fails(

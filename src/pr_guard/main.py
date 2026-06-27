@@ -170,13 +170,43 @@ def _git_rev_parse(ref: str, *, repo_root: Path) -> str:
     return result.stdout.strip()
 
 
-def _slack_summary(repo: str, pr_number: int, drift_count: int) -> dict:
+def _published_comment_url(
+    published_comment: Any,
+    *,
+    repo: str,
+    pr_number: int,
+) -> str | None:
+    """Return a stable GitHub URL for the PR Guard comment when available."""
+    if not isinstance(published_comment, dict):
+        return None
+
+    html_url = str(published_comment.get("html_url") or "").strip()
+    if html_url.startswith("https://") or html_url.startswith("http://"):
+        return html_url
+
+    comment_id = published_comment.get("id")
+    if comment_id is None:
+        return None
+    return f"https://github.com/{repo}/pull/{pr_number}#issuecomment-{comment_id}"
+
+
+def _slack_summary(
+    repo: str,
+    pr_number: int,
+    drift_count: int,
+    *,
+    comment_url: str | None = None,
+) -> dict:
+    comment_label = f"<{comment_url}|PR 코멘트>" if comment_url else "PR 코멘트"
     if drift_count == 0:
-        text = f":shield: `{repo}#{pr_number}` — 모든 PRD/SEED 요구사항 충족"
+        text = (
+            f":shield: `{repo}#{pr_number}` — 모든 PRD/SEED 요구사항 충족, "
+            f"{comment_label} 게시됨"
+        )
     else:
         text = (
             f":shield: `{repo}#{pr_number}` — drift {drift_count}건 감지, "
-            f"PR 코멘트 게시됨"
+            f"{comment_label} 게시됨"
         )
     return {"text": text}
 
@@ -579,15 +609,21 @@ def main(argv: list[str] | None = None) -> int:
         write_guard_report(report, args.json_output)
 
     comment_body = format_drift_comment(advisory) + footer
+    published_comment_url: str | None = None
     if not args.no_publish and http is not None:
         try:
-            publish_pr_comment(
+            published_comment = publish_pr_comment(
                 http,
                 owner=owner,
                 repo=repo_name,
                 pr_number=args.pr_number,
                 body=comment_body,
                 marker=PR_COMMENT_MARKER,
+            )
+            published_comment_url = _published_comment_url(
+                published_comment,
+                repo=args.repo,
+                pr_number=args.pr_number,
             )
         except Exception as e:
             if not args.publish_best_effort:
@@ -609,7 +645,12 @@ def main(argv: list[str] | None = None) -> int:
         try:
             send_slack_webhook(
                 slack_webhook,
-                _slack_summary(args.repo, args.pr_number, len(advisory)),
+                _slack_summary(
+                    args.repo,
+                    args.pr_number,
+                    len(advisory),
+                    comment_url=published_comment_url,
+                ),
             )
         except Exception as e:
             print(f"WARN: Slack 알림 실패: {e}", file=sys.stderr)
