@@ -8,7 +8,7 @@ from typing import Protocol
 import httpx
 from pydantic import ValidationError
 
-from .models import BlockingDriftRequest, Metadata, ProposalRequest
+from .models import BlockingDriftRequest, Metadata, ProposalRequest, ReviewRequest
 from .validators import (
     parse_model_proposal,
     skip,
@@ -47,6 +47,16 @@ Rules:
 - Prefer {"blocking":[]} whenever uncertain.
 - Do not claim tests were run.
 """
+
+REVIEW_SYSTEM_PROMPT = (
+    "You are pr-guard Hermes-side general code reviewer. Return JSON only. Do not use "
+    "markdown fences. Review PR diff for bug/security/trust_boundary/perf/quality issues; "
+    "exclude PRD/SEED drift; be conservative. Output exactly: "
+    '{"score": <0-5 int>, "summary": "<short>", "findings": '
+    '[{"category":"bug|security|trust_boundary|perf|quality","severity":"error|warn|info",'
+    '"file":"<path>","line":<int>,"quote":"<short>","suggestion":"<short>"}]}. '
+    "Do not claim tests were run."
+)
 
 
 class ForbiddenRequest(Exception):
@@ -157,6 +167,8 @@ class ProposalService:
     def handle(self, payload: object, *, request_id: str | None = None) -> JsonObject:
         if isinstance(payload, dict) and payload.get("task") == "blocking_drift_classification":
             return self._handle_blocking_drift(payload, request_id=request_id)
+        if isinstance(payload, dict) and payload.get("task") == "review":
+            return self._handle_review(payload, request_id=request_id)
 
         try:
             request = ProposalRequest.model_validate(payload)
@@ -233,6 +245,47 @@ class ProposalService:
                 result = {"blocking": []}
             else:
                 result = validate_blocking_decision(decision, request=request)
+
+        if self.cache is not None:
+            self.cache.set(cache_key, result)
+        return result
+
+    def _handle_review(
+        self,
+        payload: object,
+        *,
+        request_id: str | None = None,
+    ) -> JsonObject:
+        try:
+            request = ReviewRequest.model_validate(payload)
+        except ValidationError:
+            return _unknown_review("Malformed review request.")
+
+        if (
+            len(request.diff_summary) > self.config.max_diff_summary_chars
+            or len(request.repo_context) > self.config.max_repo_context_chars
+        ):
+            return _unknown_review("review input too large.")
+
+        self._enforce_repo_allowlist_for_metadata(request.metadata)
+
+        cache_key = request_id or compute_review_idempotency_key(request, self.config)
+        if self.cache is not None:
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        try:
+            content = self.hermes_client.complete_json(build_review_messages(request))
+        except Exception:
+            result: JsonObject = _unknown_review("Hermes review failed; leaving review to humans.")
+        else:
+            try:
+                report = parse_model_proposal(content)
+            except ValueError:
+                result = _unknown_review("Malformed Hermes review.")
+            else:
+                result = _normalize_review_report(report)
 
         if self.cache is not None:
             self.cache.set(cache_key, result)
@@ -316,6 +369,59 @@ def build_blocking_messages(request: BlockingDriftRequest) -> list[dict[str, str
     ]
 
 
+def build_review_messages(request: ReviewRequest) -> list[dict[str, str]]:
+    payload_json = json.dumps(
+        request.prompt_payload(), ensure_ascii=False, sort_keys=True, indent=2
+    )
+    return [
+        {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Task: review\n"
+                f"PR Guard request JSON:\n{payload_json}\n\n"
+                "Return JSON only."
+            ),
+        },
+    ]
+
+
+def _unknown_review(reason: str) -> JsonObject:
+    return {"score": -1, "summary": reason, "findings": []}
+
+
+def _coerce_review_score(raw_score: object) -> int:
+    """Coerce a model score to 0-5, or -1 (unknown).
+
+    Mirrors pr_guard._parse_score so harmless formatting drift (e.g. the score
+    arriving as "4" or 4.0) is preserved instead of collapsing to UNKNOWN on the
+    Hermes path. bool is rejected; a negative score is the unknown sentinel.
+    """
+    if isinstance(raw_score, bool):
+        return -1
+    try:
+        score = int(raw_score)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return -1
+    if score < 0:
+        return -1
+    return min(5, score)
+
+
+def _normalize_review_report(report: JsonObject) -> JsonObject:
+    score = _coerce_review_score(report.get("score"))
+
+    summary = report.get("summary")
+    if not isinstance(summary, str):
+        summary = ""
+
+    findings = report.get("findings")
+    if not isinstance(findings, list):
+        findings = []
+
+    return {"score": score, "summary": summary, "findings": findings}
+
+
 def compute_idempotency_key(request: ProposalRequest, config: AdapterConfig) -> str:
     metadata = request.metadata
     parts = [
@@ -347,6 +453,23 @@ def compute_blocking_idempotency_key(
         request.task,
         drift_fingerprint,
         request.diff_summary,
+    ]
+    raw = "\0".join(parts).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def compute_review_idempotency_key(
+    request: ReviewRequest,
+    config: AdapterConfig,
+) -> str:
+    metadata = request.metadata
+    parts = [
+        metadata.repo or config.single_repo_mode or "",
+        str(metadata.pr_number or ""),
+        metadata.head_sha or metadata.head_ref or "",
+        request.task,
+        request.diff_summary,
+        request.repo_context,
     ]
     raw = "\0".join(parts).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
