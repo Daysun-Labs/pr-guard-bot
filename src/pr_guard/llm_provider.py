@@ -23,6 +23,7 @@ from .patcher import (
     generate_code_fix_proposal,
     generate_seed_fix,
 )
+from .review import ReviewReport, build_review_payload, parse_review_response, review_diff_via_client
 
 PROPOSAL_SCHEMA_VERSION = "pr-guard.hermes-proposal/v1"
 BLOCKING_SCHEMA_VERSION = "pr-guard.blocking-drift/v1"
@@ -51,6 +52,8 @@ class LLMProvider(Protocol):
         *,
         diff_summary: str | None = None,
     ) -> list[BlockingDriftDecision]: ...
+
+    def review_diff(self, *, diff_summary: str, repo_context: str) -> ReviewReport: ...
 
 
 class HttpClient(Protocol):
@@ -131,6 +134,14 @@ class AnthropicProvider:
             model=self.model,
         )
         return _select_blocking_from_response(resp, advisory)
+
+    def review_diff(self, *, diff_summary: str, repo_context: str) -> ReviewReport:
+        return review_diff_via_client(
+            self._claude(),
+            diff_summary=diff_summary,
+            repo_context=repo_context,
+            model=self.model,
+        )
 
     def _claude(self) -> _AnthropicMessagesAdapter:
         if self._client is None:
@@ -248,6 +259,29 @@ class HermesWebhookProvider:
             }
         )
         return _select_blocking_from_response(data, advisory)
+
+    def review_diff(self, *, diff_summary: str, repo_context: str) -> ReviewReport:
+        data = self._post(
+            {
+                "task": "review",
+                **build_review_payload(diff_summary=diff_summary, repo_context=repo_context),
+                "report_shape": {
+                    "score": "int 0-5",
+                    "summary": "str",
+                    "findings": [
+                        {
+                            "category": "bug|security|trust_boundary|perf|quality",
+                            "severity": "error|warn|info",
+                            "file": "str",
+                            "line": "int",
+                            "quote": "str",
+                            "suggestion": "str",
+                        }
+                    ],
+                },
+            }
+        )
+        return parse_review_response(data)
 
     def _post(self, payload: dict[str, Any]) -> Any:
         if self.metadata:
