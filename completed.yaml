@@ -1,0 +1,13 @@
+# Markers for ouroboros run --skip-completed
+# AC indices are 1-based, matching SEED.yaml acceptance_criteria order.
+
+completed_acs:
+  - ac: 1
+    reason: "Implemented in PR #1, 34 tests passing locally"
+    commit: 14f125b
+  - ac: 5
+    reason: "Implemented in PR #2 (foundation) + PR #3 (GitHub integration), 98 tests passing"
+    commit: b9d61f6
+  - ac: 7
+    reason: "Implemented in PR #2 (spec_parser) + PR #3 (diff_extractor, spec_matcher, oracle_l1_report), 98 tests passing"
+    commit: b9d61f6

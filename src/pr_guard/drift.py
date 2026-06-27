@@ -18,7 +18,7 @@ from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass, asdict
 from typing import Any, Iterable
 
-from .diff_extractor import NormalizedDiff
+from .diff_extractor import NormalizedDiff, is_coverage_only_diff
 from .spec_matcher import MatchResult, match_requirements
 from .spec_parser import Requirement, SpecBundle
 
@@ -38,6 +38,15 @@ _SEVERITY_BY_KIND = {
 # this below the matcher threshold so relevant partial matches can remain
 # actionable instead of being impossible to surface.
 ACTIONABLE_SCORE_FLOOR = 0.33
+
+# Requirement kinds that describe product implementation the PR is expected to
+# *provide*. PRD "성공 기준" parse as ``intent``, "핵심 제약" as ``constraint``,
+# and SEED "인수 조건" as ``acceptance`` (see ``spec_parser._classify_section``).
+# A coverage-only PR (tests/docs only — see ``diff_extractor``) provides no
+# implementation, so missing_requirement drift against these kinds is a false
+# positive on such PRs. ``non_goal`` is excluded: it is never actionable and is
+# already suppressed by ``filter_actionable_drift``.
+_IMPLEMENTATION_KINDS = frozenset({"acceptance", "constraint", "intent"})
 
 
 @dataclass(frozen=True)
@@ -132,6 +141,43 @@ def filter_actionable_drift(
             continue
         actionable.append(d)
     return actionable, suppressed
+
+
+def partition_coverage_only_drift(
+    drifts: Iterable[DriftItem],
+    diff: NormalizedDiff,
+) -> tuple[list[DriftItem], list[DriftItem]]:
+    """Split off implementation drift that a coverage-only PR cannot owe.
+
+    When ``diff`` is coverage-only — every changed file is a regression test or
+    doc (see :func:`diff_extractor.is_coverage_only_diff`) — missing
+    *implementation* requirements (kinds in :data:`_IMPLEMENTATION_KINDS`) are
+    not drift: the implementation already exists on the base branch and this PR
+    only adds coverage. Those items are returned in the second list
+    (``suppressed``) and removed from the first (``kept``).
+
+    For any other diff — including one that *also* touches product source, a CI
+    workflow, config, or a lockfile — nothing is suppressed and
+    ``(list(drifts), [])`` is returned, so genuine source drift is always
+    preserved. ``non_goal`` drift is also never suppressed here; it flows
+    through to ``filter_actionable_drift`` unchanged.
+
+    This runs *before* ``filter_actionable_drift`` so the suppressed items never
+    reach the actionable/advisory band, the semantic blocking classifier, or
+    fix-PR generation — keeping a tests/docs-only PR at zero actionable drift
+    regardless of whether an LLM provider is configured.
+    """
+    items = list(drifts)
+    if not is_coverage_only_diff(diff):
+        return items, []
+    kept: list[DriftItem] = []
+    suppressed: list[DriftItem] = []
+    for d in items:
+        if d.kind in _IMPLEMENTATION_KINDS:
+            suppressed.append(d)
+        else:
+            kept.append(d)
+    return kept, suppressed
 
 
 def select_blocking_drift(
