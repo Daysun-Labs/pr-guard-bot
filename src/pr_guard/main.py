@@ -21,7 +21,8 @@ from typing import Any
 
 import httpx
 
-from .comment_format import format_drift_comment
+from .comment_format import format_drift_comment, format_review_comment
+from .review import UNKNOWN_SCORE, ReviewReport
 from .detector import detect_spec_files
 from .diff_extractor import parse_unified_diff
 from .drift import (
@@ -44,6 +45,7 @@ from .spec_parser import parse_repo
 
 MAX_FIX_PRS_DEFAULT = 3
 PR_COMMENT_MARKER = "<!-- pr-guard:drift-report -->"
+REVIEW_COMMENT_MARKER = "<!-- pr-guard:review-report -->"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -279,19 +281,46 @@ def _maybe_generate_fix_prs(
 
 
 def _repo_overview(repo_root: Path, *, max_files: int = 80) -> str:
-    """Return a short tree summary so Claude can ground proposals in real paths."""
-    paths: list[str] = []
+    """Return a short list of real repo paths to ground LLM proposals/review.
+
+    Uses ``git ls-files`` (tracked files only, no full-tree materialization) so
+    large repos are not enumerated/sorted just to surface up to ``max_files``
+    paths; falls back to a pruned, capped walk when git is unavailable.
+    """
     skip_dirs = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache"}
-    for path in sorted(repo_root.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(repo_root)
-        if any(part in skip_dirs for part in rel.parts):
-            continue
-        paths.append(str(rel))
-        if len(paths) >= max_files:
-            paths.append(f"... ({len(paths)}+ files truncated)")
-            break
+    paths: list[str] = []
+
+    def _truncated() -> str:
+        paths.append(f"... ({len(paths)}+ files truncated)")
+        return "\n".join(paths)
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=20,
+        )
+    except (subprocess.SubprocessError, OSError):
+        result = None
+    if result is not None:
+        for rel in result.stdout.splitlines():
+            if not rel or any(part in skip_dirs for part in Path(rel).parts):
+                continue
+            paths.append(rel)
+            if len(paths) >= max_files:
+                return _truncated()
+        return "\n".join(paths)
+
+    # Fallback: pruned, capped walk (no full sorted rglob).
+    for dirpath, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        for name in sorted(filenames):
+            rel = str(Path(dirpath, name).relative_to(repo_root))
+            paths.append(rel)
+            if len(paths) >= max_files:
+                return _truncated()
     return "\n".join(paths)
 
 
@@ -315,6 +344,19 @@ def _diff_summary_for_semantic_blocking(diff: Any, *, max_chars: int = 4000) -> 
 
     summary = "\n".join(lines).strip()
     return summary[:max_chars]
+
+
+def _review_diff_payload(raw_diff: str, *, max_chars: int = 12000) -> str:
+    """Full unified diff (capped) for the review model.
+
+    Unlike the semantic-blocking summary (added text only), the reviewer needs
+    removed lines and surrounding context so it can catch regressions such as a
+    deleted guard / validation / authorization check with no replacement code.
+    """
+    text = raw_diff.strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n... (diff truncated for review)"
 
 
 def _format_fix_pr_result(item: tuple[DriftItem, int] | dict[str, Any]) -> str:
@@ -413,6 +455,16 @@ def main(argv: list[str] | None = None) -> int:
         "--fail-on-drift",
         action="store_true",
         help="Return nonzero when the structured report verdict is not pass",
+    )
+    parser.add_argument(
+        "--review",
+        action="store_true",
+        help="Run the deterministic general review score gate via the LLM provider",
+    )
+    parser.add_argument(
+        "--fail-on-security",
+        action="store_true",
+        help="Return nonzero when the review pass finds a security error",
     )
     parser.add_argument(
         "--fail-on-advisory-drift",
@@ -640,6 +692,54 @@ def main(argv: list[str] | None = None) -> int:
         f"(suppressed unrelated={suppressed['unrelated']}, non_goal={suppressed['non_goal']})"
     )
 
+    review_gate_failed = False
+    if args.review and provider is not None:
+        try:
+            review_report = provider.review_diff(
+                diff_summary=_review_diff_payload(raw_diff),
+                repo_context=_repo_overview(args.repo_root),
+            )
+        except Exception as e:
+            # Review is advisory unless --fail-on-security finds a concrete
+            # security error; a transient provider failure must surface as an
+            # unknown review, never fail an otherwise-passing PR.
+            print(
+                f"WARN: review provider failed; treating as unknown review: {e}",
+                file=sys.stderr,
+            )
+            review_report = ReviewReport(
+                findings=(),
+                score=UNKNOWN_SCORE,
+                summary="Review unavailable: provider error.",
+            )
+        review_body = format_review_comment(review_report)
+        if not args.no_publish and http is not None:
+            try:
+                publish_pr_comment(
+                    http,
+                    owner=owner,
+                    repo=repo_name,
+                    pr_number=args.pr_number,
+                    body=review_body,
+                    marker=REVIEW_COMMENT_MARKER,
+                )
+            except Exception as e:
+                if not args.publish_best_effort:
+                    raise
+                print(
+                    "WARN: PR comment publish failed; continuing because "
+                    f"--publish-best-effort is set: {e}",
+                    file=sys.stderr,
+                )
+        security_blocking = review_report.has_blocking_security()
+        review_gate_failed = bool(args.fail_on_security and security_blocking)
+        print(
+            f"[review] score={review_report.score} findings={len(review_report.findings)} "
+            f"security_blocking={security_blocking}"
+        )
+    elif args.review:
+        print("[review] skipped: no LLM provider configured")
+
     # 5) Slack 알림 (실패해도 종료 코드는 0 유지)
     if slack_webhook and not args.no_publish:
         try:
@@ -655,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             print(f"WARN: Slack 알림 실패: {e}", file=sys.stderr)
 
-    if args.fail_on_drift and report["verdict"] != "pass":
+    if (args.fail_on_drift and report["verdict"] != "pass") or review_gate_failed:
         return 1
     return 0
 

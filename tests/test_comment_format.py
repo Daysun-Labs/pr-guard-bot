@@ -1,8 +1,9 @@
-"""Unit tests for comment_format.format_drift_comment (Sub-AC 1)."""
+"""Unit tests for comment_format Markdown rendering."""
 from __future__ import annotations
 
-from pr_guard.comment_format import format_drift_comment
+from pr_guard.comment_format import format_drift_comment, format_review_comment
 from pr_guard.drift import DriftItem
+from pr_guard.review import ReviewFinding, ReviewReport
 
 
 def _drift(**overrides) -> DriftItem:
@@ -103,3 +104,83 @@ def test_multiline_quote_collapsed():
     body = format_drift_comment([_drift(quote="line1\nline2")])
     assert "line1 line2" in body
     assert "\n  > line1\n" not in body
+
+
+def _finding(**overrides) -> ReviewFinding:
+    base = dict(
+        category="bug",
+        severity="error",
+        file="src/app.py",
+        line=12,
+        quote="return None",
+        suggestion="Return the parsed payload.",
+    )
+    base.update(overrides)
+    return ReviewFinding(**base)
+
+
+def _review_report(**overrides) -> ReviewReport:
+    base = dict(
+        findings=(_finding(),),
+        score=4,
+        summary="One deterministic gate finding needs attention.",
+    )
+    base.update(overrides)
+    return ReviewReport(**base)
+
+
+def test_review_comment_includes_score_and_summary():
+    body = format_review_comment(_review_report(score=3, summary="Review score is gated."))
+
+    assert "## PR Guard — Review" in body
+    assert "**Score: 3/5**" in body
+    assert "Review score is gated." in body
+
+
+def test_review_comment_renders_unknown_score():
+    body = format_review_comment(_review_report(score=-1))
+
+    assert "**Score: unknown**" in body
+    assert "**Score: -1/5**" not in body
+
+
+def test_review_comment_filters_to_error_or_security_findings_only():
+    body = format_review_comment(
+        _review_report(
+            findings=(
+                _finding(category="bug", severity="error", suggestion="Fix the crash."),
+                _finding(
+                    category="quality",
+                    severity="warn",
+                    file="src/slow.py",
+                    line=8,
+                    suggestion="Consider cleanup.",
+                ),
+                _finding(
+                    category="security",
+                    severity="info",
+                    file="src/auth.py",
+                    line=44,
+                    suggestion="Double-check token handling.",
+                ),
+            )
+        )
+    )
+
+    assert "- error · bug · src/app.py:12 — Fix the crash." in body
+    assert "- info · security · src/auth.py:44 — Double-check token handling." in body
+    assert "Consider cleanup." not in body
+
+
+def test_review_comment_empty_findings_says_no_score_gate_findings():
+    body = format_review_comment(_review_report(findings=()))
+
+    assert "No error/security findings" in body
+    assert body.endswith("\n")
+
+
+def test_review_comment_omits_empty_summary():
+    body = format_review_comment(_review_report(summary=""))
+
+    assert "One deterministic gate finding needs attention." not in body
+    assert "deterministic score gate" in body

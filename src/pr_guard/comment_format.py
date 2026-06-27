@@ -10,6 +10,7 @@ from typing import Iterable, Mapping, Any
 
 from .drift import DriftItem
 from .drift_classifier import classify_drift
+from .review import ReviewReport
 
 
 _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
@@ -91,4 +92,41 @@ def format_drift_comment(drifts: Iterable[Any], *, title: str = "PR Guard — PR
                 lines.append(f"  > {quote}")
         lines.append("")
 
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def format_review_comment(report: ReviewReport, *, title: str = "PR Guard — Review") -> str:
+    """Render the deterministic review score-gate comment."""
+    lines: list[str] = [f"## {title}", ""]
+    score = "unknown" if report.score == -1 else f"{report.score}/5"
+    lines.append(f"**Score: {score}**")
+
+    summary = report.summary.strip()
+    if summary:
+        lines.append("")
+        lines.append(summary)
+
+    lines.append("")
+    gate_findings = [
+        finding
+        for finding in report.findings
+        if finding.severity == "error" or finding.category == "security"
+    ]
+    if gate_findings:
+        for finding in gate_findings:
+            suggestion = finding.suggestion.strip().replace("\n", " ")
+            if not suggestion:
+                suggestion = "No suggestion provided."
+            lines.append(
+                f"- {finding.severity} · {finding.category} · "
+                f"{finding.file}:{finding.line} — {suggestion}"
+            )
+    else:
+        lines.append("No error/security findings for the deterministic score gate.")
+
+    lines.append("")
+    lines.append(
+        "_General advisory review is handled by Codex GitHub review; "
+        "this comment is the deterministic score gate._"
+    )
     return "\n".join(lines).rstrip() + "\n"
