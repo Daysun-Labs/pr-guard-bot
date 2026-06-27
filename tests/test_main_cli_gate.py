@@ -741,6 +741,54 @@ def test_unknown_review_score_does_not_fail_security_gate(
     assert "**Score: unknown**" in published[1]["body"]
 
 
+def test_review_provider_failure_is_unknown_not_fatal(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    class Provider:
+        def review_diff(self, *, diff_summary: str, repo_context: str) -> ReviewReport:
+            raise RuntimeError("hermes down")
+
+    published = _install_publish_stubs(monkeypatch, provider=Provider())
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+            "--review",
+            "--fail-on-security",
+        ]
+    )
+
+    # A transient provider failure must not fail an otherwise-passing PR.
+    assert rc == 0
+    assert "**Score: unknown**" in published[1]["body"]
+
+
+def test_review_diff_payload_includes_removals_and_truncates() -> None:
+    raw = "diff --git a/x b/x\n-removed guard\n+added line\n unchanged"
+    assert main_mod._review_diff_payload(raw) == raw.strip()
+    out = main_mod._review_diff_payload("x" * 20000, max_chars=100)
+    assert out.endswith("(diff truncated for review)")
+
+
+def test_repo_overview_fallback_lists_files_and_skips_dirs(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("x")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "junk.js").write_text("x")
+    out = main_mod._repo_overview(tmp_path)
+    assert "src/a.py" in out
+    assert "junk.js" not in out
+
+
 def test_review_pass_skips_without_provider(tmp_path: Path, monkeypatch: Any) -> None:
     published = _install_publish_stubs(monkeypatch, provider=None)
 
