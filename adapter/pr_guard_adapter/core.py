@@ -390,9 +390,26 @@ def _unknown_review(reason: str) -> JsonObject:
     return {"score": -1, "summary": reason, "findings": []}
 
 
+def _coerce_review_score(raw_score: object) -> int:
+    """Coerce a model score to 0-5, or -1 (unknown).
+
+    Mirrors pr_guard._parse_score so harmless formatting drift (e.g. the score
+    arriving as "4" or 4.0) is preserved instead of collapsing to UNKNOWN on the
+    Hermes path. bool is rejected; a negative score is the unknown sentinel.
+    """
+    if isinstance(raw_score, bool):
+        return -1
+    try:
+        score = int(raw_score)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return -1
+    if score < 0:
+        return -1
+    return min(5, score)
+
+
 def _normalize_review_report(report: JsonObject) -> JsonObject:
-    raw_score = report.get("score")
-    score = raw_score if type(raw_score) is int and 0 <= raw_score <= 5 else -1
+    score = _coerce_review_score(report.get("score"))
 
     summary = report.get("summary")
     if not isinstance(summary, str):

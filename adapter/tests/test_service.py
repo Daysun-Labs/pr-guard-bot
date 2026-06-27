@@ -291,6 +291,18 @@ def test_review_malformed_hermes_output_becomes_unknown_report() -> None:
     assert "Malformed Hermes review" in result["summary"]
 
 
+def test_review_score_coercion_accepts_string_and_float_and_clamps() -> None:
+    # Harmless formatting drift ("4"/4.0) must be preserved, not collapsed to -1;
+    # out-of-range clamps high, negative/bool are the unknown sentinel.
+    for raw, expected in [("4", 4), (4.0, 4), (7, 5), (-2, -1), (True, -1)]:
+        hermes = FakeHermesClient(
+            json.dumps({"score": raw, "summary": "s", "findings": []})
+        )
+        service = ProposalService(config(), hermes_client=hermes)
+        result = service.handle(REVIEW_PAYLOAD)
+        assert result["score"] == expected
+
+
 def test_review_request_requires_review_task_and_prompt_payload_round_trips() -> None:
     with pytest.raises(ValidationError):
         ReviewRequest.model_validate(REVIEW_PAYLOAD | {"task": "code_fix"})
