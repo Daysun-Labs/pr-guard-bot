@@ -6,6 +6,7 @@ from typing import Any
 
 from pr_guard import main as main_mod
 from pr_guard.drift import BlockingDriftDecision, DriftItem
+from pr_guard.review import ReviewFinding, ReviewReport
 from pr_guard.spec_parser import SpecBundle
 
 
@@ -67,6 +68,71 @@ def _install_common_stubs(monkeypatch: Any, actionable: list[DriftItem]) -> dict
     monkeypatch.setattr(main_mod, "send_slack_webhook", record_slack)
     monkeypatch.setattr(main_mod, "_maybe_generate_fix_prs", record_fix_prs)
     return calls
+
+
+def _install_publish_stubs(
+    monkeypatch: Any,
+    *,
+    provider: Any | None,
+    actionable: list[DriftItem] | None = None,
+) -> list[dict[str, Any]]:
+    items = actionable or []
+    published: list[dict[str, Any]] = []
+
+    monkeypatch.setenv("GITHUB_TOKEN", "dummy-token")
+    monkeypatch.setenv("PR_GUARD_MAX_FIX_PRS", "0")
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.setattr(
+        main_mod,
+        "detect_spec_files",
+        lambda repo_root: {"prd": True, "seed": True},
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "parse_repo",
+        lambda repo_root: SpecBundle(
+            prd_path="PRD.md",
+            seed_path="SEED.md",
+            seed_yaml_path=None,
+            requirements=[],
+        ),
+    )
+    monkeypatch.setattr(main_mod, "_git_diff", lambda base_ref, head_ref, repo_root: "")
+    monkeypatch.setattr(main_mod, "detect_drift", lambda spec_bundle, diff: items)
+    monkeypatch.setattr(
+        main_mod,
+        "filter_actionable_drift",
+        lambda raw: (items, {"unrelated": 0, "non_goal": 0}),
+    )
+    monkeypatch.setattr(main_mod, "create_github_client", lambda token: object())
+    monkeypatch.setattr(main_mod, "resolve_llm_provider", lambda env, **kwargs: provider)
+
+    def record_publish(*args: Any, **kwargs: Any) -> dict[str, int]:
+        published.append(dict(kwargs))
+        return {"id": 123}
+
+    monkeypatch.setattr(main_mod, "publish_pr_comment", record_publish)
+    return published
+
+
+def _review_report(
+    *,
+    score: int = 4,
+    findings: tuple[ReviewFinding, ...] = (),
+    summary: str = "Review pass completed.",
+) -> ReviewReport:
+    return ReviewReport(findings=findings, score=score, summary=summary)
+
+
+def _security_finding() -> ReviewFinding:
+    return ReviewFinding(
+        category="security",
+        severity="error",
+        file="src/auth.py",
+        line=44,
+        quote="token",
+        suggestion="Validate the token before use.",
+    )
 
 
 def test_slack_summary_links_to_published_pr_comment() -> None:
@@ -578,3 +644,122 @@ def test_fix_pr_footer_includes_idempotent_status_reason_and_fail_on_drift_still
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["verdict"] == "needs_fix_review"
     assert report["drift_count"] == 1
+
+
+def test_review_flag_runs_provider_and_publishes_review_comment(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    calls: list[dict[str, str]] = []
+
+    class Provider:
+        def review_diff(self, *, diff_summary: str, repo_context: str) -> ReviewReport:
+            calls.append({"diff_summary": diff_summary, "repo_context": repo_context})
+            return _review_report(score=4)
+
+    published = _install_publish_stubs(monkeypatch, provider=Provider())
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+            "--review",
+        ]
+    )
+
+    assert rc == 0
+    assert calls == [{"diff_summary": "", "repo_context": ""}]
+    assert [item["marker"] for item in published] == [
+        main_mod.PR_COMMENT_MARKER,
+        main_mod.REVIEW_COMMENT_MARKER,
+    ]
+    assert "## PR Guard — Review" in published[1]["body"]
+
+
+def test_fail_on_security_sets_nonzero_exit(tmp_path: Path, monkeypatch: Any, capsys: Any) -> None:
+    class Provider:
+        def review_diff(self, *, diff_summary: str, repo_context: str) -> ReviewReport:
+            return _review_report(score=2, findings=(_security_finding(),))
+
+    _install_publish_stubs(monkeypatch, provider=Provider())
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+            "--review",
+            "--fail-on-security",
+        ]
+    )
+
+    assert rc == 1
+    assert "[review] score=2 findings=1 security_blocking=True" in capsys.readouterr().out
+
+
+def test_unknown_review_score_does_not_fail_security_gate(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    class Provider:
+        def review_diff(self, *, diff_summary: str, repo_context: str) -> ReviewReport:
+            return _review_report(score=-1, findings=())
+
+    published = _install_publish_stubs(monkeypatch, provider=Provider())
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+            "--review",
+            "--fail-on-security",
+        ]
+    )
+
+    assert rc == 0
+    assert "**Score: unknown**" in published[1]["body"]
+
+
+def test_review_pass_skips_without_provider(tmp_path: Path, monkeypatch: Any) -> None:
+    published = _install_publish_stubs(monkeypatch, provider=None)
+
+    rc = main_mod.main(
+        [
+            "--repo",
+            "octo/app",
+            "--pr-number",
+            "42",
+            "--base-ref",
+            "main",
+            "--head-ref",
+            "feature",
+            "--repo-root",
+            str(tmp_path),
+            "--review",
+            "--fail-on-security",
+        ]
+    )
+
+    assert rc == 0
+    assert [item["marker"] for item in published] == [main_mod.PR_COMMENT_MARKER]

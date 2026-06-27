@@ -21,7 +21,7 @@ from typing import Any
 
 import httpx
 
-from .comment_format import format_drift_comment
+from .comment_format import format_drift_comment, format_review_comment
 from .detector import detect_spec_files
 from .diff_extractor import parse_unified_diff
 from .drift import (
@@ -44,6 +44,7 @@ from .spec_parser import parse_repo
 
 MAX_FIX_PRS_DEFAULT = 3
 PR_COMMENT_MARKER = "<!-- pr-guard:drift-report -->"
+REVIEW_COMMENT_MARKER = "<!-- pr-guard:review-report -->"
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -415,6 +416,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Return nonzero when the structured report verdict is not pass",
     )
     parser.add_argument(
+        "--review",
+        action="store_true",
+        help="Run the deterministic general review score gate via the LLM provider",
+    )
+    parser.add_argument(
+        "--fail-on-security",
+        action="store_true",
+        help="Return nonzero when the review pass finds a security error",
+    )
+    parser.add_argument(
         "--fail-on-advisory-drift",
         action="store_true",
         help=(
@@ -640,6 +651,40 @@ def main(argv: list[str] | None = None) -> int:
         f"(suppressed unrelated={suppressed['unrelated']}, non_goal={suppressed['non_goal']})"
     )
 
+    review_gate_failed = False
+    if args.review and provider is not None:
+        review_report = provider.review_diff(
+            diff_summary=_diff_summary_for_semantic_blocking(diff),
+            repo_context=_repo_overview(args.repo_root),
+        )
+        review_body = format_review_comment(review_report)
+        if not args.no_publish and http is not None:
+            try:
+                publish_pr_comment(
+                    http,
+                    owner=owner,
+                    repo=repo_name,
+                    pr_number=args.pr_number,
+                    body=review_body,
+                    marker=REVIEW_COMMENT_MARKER,
+                )
+            except Exception as e:
+                if not args.publish_best_effort:
+                    raise
+                print(
+                    "WARN: PR comment publish failed; continuing because "
+                    f"--publish-best-effort is set: {e}",
+                    file=sys.stderr,
+                )
+        security_blocking = review_report.has_blocking_security()
+        review_gate_failed = bool(args.fail_on_security and security_blocking)
+        print(
+            f"[review] score={review_report.score} findings={len(review_report.findings)} "
+            f"security_blocking={security_blocking}"
+        )
+    elif args.review:
+        print("[review] skipped: no LLM provider configured")
+
     # 5) Slack 알림 (실패해도 종료 코드는 0 유지)
     if slack_webhook and not args.no_publish:
         try:
@@ -655,7 +700,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             print(f"WARN: Slack 알림 실패: {e}", file=sys.stderr)
 
-    if args.fail_on_drift and report["verdict"] != "pass":
+    if (args.fail_on_drift and report["verdict"] != "pass") or review_gate_failed:
         return 1
     return 0
 
