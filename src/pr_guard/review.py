@@ -206,7 +206,12 @@ def _parse_score(raw_score: Any) -> int | None:
         score = int(raw_score)
     except (TypeError, ValueError):
         return None
-    return max(0, min(5, score))
+    # A negative score is the UNKNOWN_SCORE sentinel (e.g. propagated from the
+    # Hermes adapter), not a real 0-5 score — surface it as unknown rather than
+    # clamping it to 0 (which would make an unknown review look "terrible").
+    if score < 0:
+        return None
+    return min(5, score)
 
 
 def _unknown_report(summary: str) -> ReviewReport:

@@ -114,3 +114,34 @@ class BlockingDriftRequest(BaseModel):
         """Return compact JSON-serializable context for the Hermes user prompt."""
 
         return self.model_dump(exclude_none=True, mode="json")
+
+
+class ReviewRequest(BaseModel):
+    """Validated request for general PR review."""
+
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: str | None = None
+    task: str
+    metadata: Metadata = Field(default_factory=Metadata)
+    diff_summary: str = ""
+    repo_context: str = ""
+    report_shape: dict[str, Any] | None = None
+
+    @field_validator("task")
+    @classmethod
+    def _task_non_empty(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("task must be non-empty")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_task(self) -> "ReviewRequest":
+        if self.task != "review":
+            raise ValueError("ReviewRequest requires review task")
+        return self
+
+    def prompt_payload(self) -> dict[str, Any]:
+        """Return compact JSON-serializable context for the Hermes user prompt."""
+
+        return self.model_dump(exclude_none=True, mode="json")

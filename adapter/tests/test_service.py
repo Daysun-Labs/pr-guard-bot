@@ -4,6 +4,7 @@ import json
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from pr_guard_adapter.core import (
     AdapterConfig,
@@ -11,6 +12,7 @@ from pr_guard_adapter.core import (
     InMemoryIdempotencyCache,
     ProposalService,
 )
+from pr_guard_adapter.models import ReviewRequest
 
 
 class FakeHermesClient:
@@ -73,6 +75,34 @@ BLOCKING_PAYLOAD = {
                 "reason": "why this scoped advisory finding is real blocking drift",
             }
         ]
+    },
+}
+
+REVIEW_PAYLOAD = {
+    "schema_version": "pr-guard.review/v1",
+    "task": "review",
+    "metadata": BASE_PAYLOAD["metadata"],
+    "diff_summary": (
+        "FILE adapter/pr_guard_adapter/core.py (modified, +30, -0)\n"
+        "symbols: ProposalService.handle\n"
+        "added:\n"
+        "if payload.get('task') == 'review':\n"
+        "    return self._handle_review(payload)"
+    ),
+    "repo_context": "adapter/pr_guard_adapter/core.py\nadapter/pr_guard_adapter/models.py\n",
+    "report_shape": {
+        "score": 0,
+        "summary": "short review summary",
+        "findings": [
+            {
+                "category": "bug",
+                "severity": "warn",
+                "file": "path",
+                "line": 1,
+                "quote": "short quote",
+                "suggestion": "short suggestion",
+            }
+        ],
     },
 }
 
@@ -220,4 +250,86 @@ def test_blocking_classification_empty_advisory_skips_hermes_call() -> None:
     result = service.handle(BLOCKING_PAYLOAD | {"advisory_drifts": []})
 
     assert result == {"blocking": []}
+    assert hermes.calls == []
+
+
+def test_review_request_returns_report_and_prompt() -> None:
+    report = {
+        "score": 2,
+        "summary": "Review found one quality issue.",
+        "findings": [
+            {
+                "category": "quality",
+                "severity": "warn",
+                "file": "adapter/pr_guard_adapter/core.py",
+                "line": 123,
+                "quote": "return self._handle_review(payload)",
+                "suggestion": "Pass request_id through the review handler.",
+            }
+        ],
+    }
+    hermes = FakeHermesClient(json.dumps(report))
+    service = ProposalService(config(), hermes_client=hermes)
+
+    result = service.handle(REVIEW_PAYLOAD)
+
+    assert result == report
+    assert len(hermes.calls) == 1
+    assert "general code reviewer" in hermes.calls[0][0]["content"]
+    assert "Task: review" in hermes.calls[0][1]["content"]
+    assert "Daysun-Labs/astate-brain" in hermes.calls[0][1]["content"]
+
+
+def test_review_malformed_hermes_output_becomes_unknown_report() -> None:
+    hermes = FakeHermesClient("this is not json")
+    service = ProposalService(config(), hermes_client=hermes)
+
+    result = service.handle(REVIEW_PAYLOAD)
+
+    assert result["score"] == -1
+    assert result["findings"] == []
+    assert "Malformed Hermes review" in result["summary"]
+
+
+def test_review_request_requires_review_task_and_prompt_payload_round_trips() -> None:
+    with pytest.raises(ValidationError):
+        ReviewRequest.model_validate(REVIEW_PAYLOAD | {"task": "code_fix"})
+
+    request = ReviewRequest.model_validate(REVIEW_PAYLOAD)
+
+    payload = request.prompt_payload()
+    assert payload["task"] == "review"
+    assert payload["diff_summary"] == REVIEW_PAYLOAD["diff_summary"]
+    assert payload["repo_context"] == REVIEW_PAYLOAD["repo_context"]
+
+
+def test_review_oversize_diff_summary_becomes_unknown_without_hermes_call() -> None:
+    hermes = FakeHermesClient('{"score":0,"summary":"should not run","findings":[]}')
+    service = ProposalService(config(), hermes_client=hermes)
+    payload = REVIEW_PAYLOAD | {"diff_summary": "x" * (config().max_diff_summary_chars + 1)}
+
+    result = service.handle(payload)
+
+    assert result == {
+        "score": -1,
+        "summary": "review input too large.",
+        "findings": [],
+    }
+    assert hermes.calls == []
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        BASE_PAYLOAD["metadata"] | {"repo": "evil/repo"},
+        {k: v for k, v in BASE_PAYLOAD["metadata"].items() if k != "repo"},
+    ],
+)
+def test_review_repo_allowlist_blocks_unapproved_or_missing_repo(metadata: dict[str, object]) -> None:
+    hermes = FakeHermesClient('{"score":0,"summary":"should not run","findings":[]}')
+    service = ProposalService(config(), hermes_client=hermes)
+
+    with pytest.raises(ForbiddenRequest):
+        service.handle(REVIEW_PAYLOAD | {"metadata": metadata})
+
     assert hermes.calls == []

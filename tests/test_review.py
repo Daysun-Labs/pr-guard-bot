@@ -112,7 +112,8 @@ def test_parse_review_response_clamps_scores() -> None:
     low = parse_review_response({"score": -3, "summary": "Low.", "findings": []})
 
     assert high.score == 5
-    assert low.score == 0
+    # A negative score is treated as UNKNOWN (sentinel), not clamped to 0.
+    assert low.score == UNKNOWN_SCORE
 
 
 def test_parse_review_response_drops_malformed_findings() -> None:
